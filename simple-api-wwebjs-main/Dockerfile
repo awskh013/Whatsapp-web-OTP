@@ -1,6 +1,3 @@
-FROM node:22
-
-# تحديث apt وتثبيت libs اللازمة لـ Puppeteer
 RUN apt-get update && apt-get install -y \
     gconf-service \
     libasound2 \
@@ -35,6 +32,7 @@ RUN apt-get update && apt-get install -y \
     libxrender1 \
     libxss1 \
     libxtst6 \
+    libdrm2 \
     ca-certificates \
     fonts-liberation \
     libappindicator1 \
@@ -43,24 +41,3 @@ RUN apt-get update && apt-get install -y \
     wget \
     --no-install-recommends \
     && rm -rf /var/lib/apt/lists/*
-
-# إعداد مجلد العمل
-WORKDIR /usr/src/app
-
-# نسخ ملفات package.json و package-lock.json
-COPY package.json package-lock.json* ./
-
-# تثبيت dependencies
-RUN npm install
-
-# نسخ باقي الملفات
-COPY . .
-
-# تعيين البورت
-ENV PORT=3000
-
-# فتح البورت
-EXPOSE 3000
-
-# أمر تشغيل البوت
-CMD ["node", "main.js"]

@@ -1,3 +1,14 @@
+# استخدم صورة Node.js الرسمية
+FROM node:22-bullseye
+
+# إنشاء مجلد العمل
+WORKDIR /usr/src/app
+
+# نسخ ملفات المشروع
+COPY package*.json ./
+COPY . .
+
+# تثبيت المكتبات النظامية اللازمة لـ Puppeteer
 RUN apt-get update && apt-get install -y \
     gconf-service \
     libasound2 \
@@ -41,3 +52,15 @@ RUN apt-get update && apt-get install -y \
     wget \
     --no-install-recommends \
     && rm -rf /var/lib/apt/lists/*
+
+# تثبيت الـ dependencies
+RUN npm install
+
+# ضبط المتغيرات البيئية
+ENV PORT=3000
+
+#Expose البورت
+EXPOSE 3000
+
+# تشغيل البوت
+CMD ["npm", "start"]

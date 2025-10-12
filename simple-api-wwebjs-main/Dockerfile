@@ -1,14 +1,16 @@
-# استخدم صورة Node.js الرسمية
+# استخدم Node 22 على Debian Bullseye
 FROM node:22-bullseye
 
-# إنشاء مجلد العمل
+# مجلد العمل
 WORKDIR /usr/src/app
 
-# نسخ ملفات المشروع
+# نسخ package.json و package-lock.json
 COPY package*.json ./
+
+# نسخ باقي ملفات المشروع
 COPY . .
 
-# تثبيت المكتبات النظامية اللازمة لـ Puppeteer
+# تثبيت المكتبات النظامية الضرورية لتشغيل Chromium (Puppeteer)
 RUN apt-get update && apt-get install -y \
     gconf-service \
     libasound2 \
@@ -44,23 +46,23 @@ RUN apt-get update && apt-get install -y \
     libxss1 \
     libxtst6 \
     libdrm2 \
+    libgbm1 \
     ca-certificates \
     fonts-liberation \
     libappindicator1 \
     lsb-release \
     xdg-utils \
     wget \
-    --no-install-recommends \
-    && rm -rf /var/lib/apt/lists/*
+    --no-install-recommends && rm -rf /var/lib/apt/lists/*
 
-# تثبيت الـ dependencies
+# تثبيت dependencies
 RUN npm install
 
-# ضبط المتغيرات البيئية
+# إعداد متغيرات البيئة
 ENV PORT=3000
 
-#Expose البورت
+# فتح المنفذ
 EXPOSE 3000
 
-# تشغيل البوت
+# أمر التشغيل
 CMD ["npm", "start"]

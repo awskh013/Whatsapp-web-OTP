@@ -5,6 +5,9 @@
   "scripts": {
     "start": "node main.js"
   },
+  "engines": {
+    "node": ">=18.0.0"
+  },
   "dependencies": {
     "dotenv": "^16.4.7",
     "express": "^4.21.2",
@@ -12,5 +15,11 @@
     "qrcode": "^1.5.4",
     "whatsapp-web.js": "^1.26.0",
     "puppeteer": "^22.0.0"
+  },
+  "puppeteer": {
+    "args": [
+      "--no-sandbox",
+      "--disable-setuid-sandbox"
+    ]
   }
 }

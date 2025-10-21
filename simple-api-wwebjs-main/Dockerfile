@@ -55,9 +55,6 @@ RUN apt-get update && apt-get install -y \
     wget \
     --no-install-recommends && rm -rf /var/lib/apt/lists/*
 
-# تثبيت dependencies
-RUN npm install pg
-
 RUN npm install
 
 # إعداد متغيرات البيئة

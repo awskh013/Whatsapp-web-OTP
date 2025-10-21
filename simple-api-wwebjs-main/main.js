@@ -1,7 +1,6 @@
 const express = require("express");
-const { Client, LegacySessionAuth } = require("whatsapp-web.js");
+const { Client, LocalAuth } = require("whatsapp-web.js");
 const qr2 = require("qrcode");
-const fs = require("fs");
 require("dotenv").config();
 
 const app = express();
@@ -11,17 +10,11 @@ app.set("view engine", "ejs");
 app.set("views", "pages");
 
 const PORT = process.env.PORT || 3000;
-const SESSION_FILE_PATH = "./session.json";
-
-let sessionData;
-if (fs.existsSync(SESSION_FILE_PATH)) {
-  sessionData = require(SESSION_FILE_PATH);
-  console.log("✅ Session loaded from file");
-}
 
 const client = new Client({
-  authStrategy: new LegacySessionAuth({
-    session: sessionData,
+  authStrategy: new LocalAuth({
+    dataPath: "/tmp/wwebjs-auth", // تخزين مؤقت لتقليل المساحة
+    clientId: "primary"
   }),
   puppeteer: {
     headless: true,
@@ -48,14 +41,8 @@ client.on("ready", () => {
   console.log("🤖 WhatsApp Bot Ready!");
 });
 
-client.on("authenticated", (session) => {
-  fs.writeFileSync(SESSION_FILE_PATH, JSON.stringify(session));
-  console.log("💾 Session saved");
-});
-
 client.on("auth_failure", (msg) => {
   console.error("❌ Auth failed:", msg);
-  if (fs.existsSync(SESSION_FILE_PATH)) fs.unlinkSync(SESSION_FILE_PATH);
 });
 
 client.initialize();
@@ -79,6 +66,7 @@ app.post("/whatsapp/sendmessage/", async (req, res) => {
       throw new Error("Invalid password");
     if (!req.body.message) throw new Error("Message is required");
     if (!req.body.phone) throw new Error("Phone number is required");
+
     await client.sendMessage(`${req.body.phone}@c.us`, req.body.message);
     res.json({ ok: true, message: "Message sent" });
   } catch (error) {

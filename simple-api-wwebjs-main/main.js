@@ -1,6 +1,7 @@
 const express = require("express");
-const { Client, LocalAuth } = require("whatsapp-web.js");
+const { Client, LegacySessionAuth } = require("whatsapp-web.js");
 const qr2 = require("qrcode");
+const fs = require("fs");
 require("dotenv").config();
 
 const app = express();
@@ -10,11 +11,17 @@ app.set("view engine", "ejs");
 app.set("views", "pages");
 
 const PORT = process.env.PORT || 3000;
+const SESSION_FILE_PATH = "./session.json";
 
-const session = new Client({
-  authStrategy: new LocalAuth({
-    dataPath: "session",
-    clientId: "primary",
+let sessionData;
+if (fs.existsSync(SESSION_FILE_PATH)) {
+  sessionData = require(SESSION_FILE_PATH);
+  console.log("✅ Session loaded from file");
+}
+
+const client = new Client({
+  authStrategy: new LegacySessionAuth({
+    session: sessionData,
   }),
   puppeteer: {
     headless: true,
@@ -22,26 +29,36 @@ const session = new Client({
       "--no-sandbox",
       "--disable-setuid-sandbox",
       "--disable-dev-shm-usage",
-      "--disable-accelerated-2d-canvas",
-      "--no-first-run",
-      "--no-zygote",
       "--single-process",
-      "--disable-gpu"
+      "--no-zygote",
+      "--disable-gpu",
     ],
   },
 });
 
 let tokenQr = null;
 
-session.on("qr", (qr) => {
+client.on("qr", (qr) => {
   tokenQr = qr;
-  console.log("QR generated");
+  console.log("📱 QR generated");
 });
 
-session.on("ready", () => {
+client.on("ready", () => {
   tokenQr = false;
-  console.log("WhatsApp Bot Ready!");
+  console.log("🤖 WhatsApp Bot Ready!");
 });
+
+client.on("authenticated", (session) => {
+  fs.writeFileSync(SESSION_FILE_PATH, JSON.stringify(session));
+  console.log("💾 Session saved");
+});
+
+client.on("auth_failure", (msg) => {
+  console.error("❌ Auth failed:", msg);
+  if (fs.existsSync(SESSION_FILE_PATH)) fs.unlinkSync(SESSION_FILE_PATH);
+});
+
+client.initialize();
 
 app.get("/", (req, res) => {
   res.send("Hello World from WhatsApp Bot!");
@@ -62,7 +79,7 @@ app.post("/whatsapp/sendmessage/", async (req, res) => {
       throw new Error("Invalid password");
     if (!req.body.message) throw new Error("Message is required");
     if (!req.body.phone) throw new Error("Phone number is required");
-    await session.sendMessage(`${req.body.phone}@c.us`, req.body.message);
+    await client.sendMessage(`${req.body.phone}@c.us`, req.body.message);
     res.json({ ok: true, message: "Message sent" });
   } catch (error) {
     console.log("Error:", error);
@@ -70,8 +87,6 @@ app.post("/whatsapp/sendmessage/", async (req, res) => {
   }
 });
 
-session.initialize();
-
 app.listen(PORT, () => {
-  console.log(`Server running on port ${PORT}`);
+  console.log(`🚀 Server running on port ${PORT}`);
 });

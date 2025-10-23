@@ -9,6 +9,7 @@
     "node": ">=18.0.0"
   },
   "dependencies": {
+    "wwebjs-mongo": "^1.1.0",
     "pg": "^8.11.5",
     "dotenv": "^16.4.7",
     "express": "^4.21.2",

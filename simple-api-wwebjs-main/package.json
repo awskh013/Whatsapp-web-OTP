@@ -9,14 +9,14 @@
     "node": ">=18.0.0"
   },
   "dependencies": {
-    "wwebjs-mongo": "^1.1.0",
-    "pg": "^8.11.5",
     "dotenv": "^16.4.7",
     "express": "^4.21.2",
     "ejs": "^3.1.10",
     "qrcode": "^1.5.4",
     "whatsapp-web.js": "^1.26.0",
-    "puppeteer": "^22.0.0"
+    "puppeteer": "^22.0.0",
+    "wwebjs-mongo": "^1.1.0",
+    "mongoose": "^7.6.1"
   },
   "puppeteer": {
     "args": [

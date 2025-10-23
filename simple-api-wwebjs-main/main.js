@@ -2,7 +2,6 @@ const express = require("express");
 const { Client, RemoteAuth } = require("whatsapp-web.js");
 const { Pool } = require("pg");
 const qr2 = require("qrcode");
-const { MongoStore } = require("wwebjs-mongo");
 require("dotenv").config();
 
 const app = express();

@@ -2,6 +2,7 @@ const express = require("express");
 const { MongoStore } = require("wwebjs-mongo");
 const { Client, RemoteAuth } = require("whatsapp-web.js");
 const qr2 = require("qrcode");
+const mongoose = require("mongoose");
 require("dotenv").config();
 
 const app = express();
@@ -11,60 +12,83 @@ app.set("view engine", "ejs");
 app.set("views", "pages");
 
 const PORT = process.env.PORT || 3000;
-
 let tokenQr = null;
 let client;
 
-// 🟢 إنشاء MongoStore مع Atlas
-const store = new MongoStore({ 
-  mongoUrl: process.env.MONGO_URL, 
-  databaseName: "whatsapp-bot", 
-  collectionName: "sessions" 
-});
-
+// ==========================
+// 🟢 اتصال MongoDB
+// ==========================
 (async () => {
-  client = new Client({
-    authStrategy: new RemoteAuth({
-      clientId: "render-free",
-      store: store,
-      backupSyncIntervalMs: 300000 // كل 5 دقائق
-    }),
-    puppeteer: {
-      headless: true,
-      args: [
-        "--no-sandbox",
-        "--disable-setuid-sandbox",
-        "--disable-dev-shm-usage",
-        "--single-process",
-        "--no-zygote",
-        "--disable-gpu"
-      ]
-    }
-  });
+  try {
+    await mongoose.connect(process.env.MONGO_URL, {
+      dbName: "whatsapp-bot",
+      useNewUrlParser: true,
+      useUnifiedTopology: true,
+    });
+    console.log("✅ Connected to MongoDB Atlas");
 
-  client.on("qr", (qr) => {
-    tokenQr = qr;
-    console.log("📱 QR generated");
-  });
+    // ==========================
+    // 🟢 إنشاء MongoStore بعد الاتصال
+    // ==========================
+    const store = new MongoStore({
+      mongoose: mongoose,
+      collectionName: "sessions"
+    });
 
-  client.on("ready", () => {
-    tokenQr = false;
-    console.log("🤖 WhatsApp Bot Ready!");
-  });
+    // ==========================
+    // 🧠 إعداد عميل WhatsApp مع RemoteAuth
+    // ==========================
+    client = new Client({
+      authStrategy: new RemoteAuth({
+        clientId: "render-free",
+        store: store,
+        backupSyncIntervalMs: 300000 // كل 5 دقائق
+      }),
+      puppeteer: {
+        headless: true,
+        args: [
+          "--no-sandbox",
+          "--disable-setuid-sandbox",
+          "--disable-dev-shm-usage",
+          "--single-process",
+          "--no-zygote",
+          "--disable-gpu",
+        ]
+      }
+    });
 
-  client.on("auth_failure", (msg) => {
-    console.error("❌ Auth failed:", msg);
-  });
+    // ==========================
+    // 📱 Events
+    // ==========================
+    client.on("qr", (qr) => {
+      tokenQr = qr;
+      console.log("📱 QR generated");
+    });
 
-  client.on("disconnected", (reason) => {
-    console.warn("⚠️ Disconnected:", reason);
-    setTimeout(() => client.initialize(), 10000);
-  });
+    client.on("ready", () => {
+      tokenQr = false;
+      console.log("🤖 WhatsApp Bot Ready!");
+    });
 
-  await client.initialize();
+    client.on("auth_failure", (msg) => {
+      console.error("❌ Auth failed:", msg);
+    });
+
+    client.on("disconnected", (reason) => {
+      console.warn("⚠️ Disconnected:", reason);
+      setTimeout(() => client.initialize(), 10000);
+    });
+
+    await client.initialize();
+
+  } catch (err) {
+    console.error("❌ MongoDB connection failed:", err);
+  }
 })();
 
+// ==========================
 // 🚀 Routes
+// ==========================
 app.get("/", (req, res) => {
   res.send("✅ WhatsApp bot is running on Render Free Plan!");
 });
@@ -96,13 +120,18 @@ app.post("/whatsapp/sendmessage/", async (req, res) => {
   }
 });
 
+// ==========================
 // 🛑 Graceful shutdown
+// ==========================
 process.on("SIGTERM", async () => {
   console.log("🛑 Graceful shutdown...");
   try {
-    await store.client.close();
+    await mongoose.connection.close();
   } catch {}
   process.exit(0);
 });
 
+// ==========================
+// 🔹 Start server
+// ==========================
 app.listen(PORT, () => console.log(`🚀 Server running on port ${PORT}`));

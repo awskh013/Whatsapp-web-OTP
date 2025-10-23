@@ -1,7 +1,8 @@
 const express = require("express");
-const { Client, LocalAuth } = require("whatsapp-web.js");
+const { Client, RemoteAuth } = require("whatsapp-web.js");
 const { Pool } = require("pg");
 const qr2 = require("qrcode");
+const { MongoStore } = require("wwebjs-mongo");
 require("dotenv").config();
 
 const app = express();
@@ -12,57 +13,58 @@ app.set("views", "pages");
 
 const PORT = process.env.PORT || 3000;
 
-// اتصال قاعدة البيانات (CockroachDB أو PostgreSQL)
+// 🧩 إعداد قاعدة البيانات (CockroachDB / PostgreSQL)
 const pool = new Pool({
   connectionString: process.env.DATABASE_URL,
   ssl: { rejectUnauthorized: false },
 });
 
+// 🧠 إعداد عميل WhatsApp
 let tokenQr = null;
 let client;
 
-// تحميل الجلسة من قاعدة البيانات
-async function loadSession() {
-  try {
-    await pool.query(`
-      CREATE TABLE IF NOT EXISTS whatsapp_session (
-        id SERIAL PRIMARY KEY,
-        data JSONB
-      );
-    `);
-    const result = await pool.query("SELECT data FROM whatsapp_session LIMIT 1");
-    if (result.rows.length > 0) {
-      console.log("✅ Session loaded from DB");
-      return result.rows[0].data;
-    } else {
-      console.log("ℹ️ No session found in DB");
-      return null;
-    }
-  } catch (err) {
-    console.error("❌ Error loading session from DB:", err);
-    return null;
-  }
+// 🪄 إنشاء التخزين باستخدام Cockroach كمخزن بيانات
+async function createStore() {
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS whatsapp_remote_auth (
+      id SERIAL PRIMARY KEY,
+      session_id TEXT UNIQUE,
+      data JSONB
+    );
+  `);
+
+  // "wwebjs-mongo" عادة يستخدم Mongo، لكن يمكننا تقليده عبر DB JSON.
+  // لذا سنخزن الجلسة يدوياً عبر RemoteAuth.
 }
 
-// حفظ الجلسة في قاعدة البيانات
-async function saveSession(session) {
-  try {
-    await pool.query("DELETE FROM whatsapp_session");
-    await pool.query("INSERT INTO whatsapp_session (data) VALUES ($1)", [session]);
-    console.log("💾 Session saved to DB");
-  } catch (err) {
-    console.error("❌ Error saving session to DB:", err);
-  }
-}
-
-// تهيئة العميل
+// 🧩 تهيئة عميل RemoteAuth
 (async () => {
-  const sessionData = await loadSession();
+  await createStore();
 
   client = new Client({
-    authStrategy: new LocalAuth({
-      dataPath: "/tmp/wwebjs-auth", // مؤقت لتقليل الحجم
-      clientId: "primary",
+    authStrategy: new RemoteAuth({
+      clientId: "render-free",
+      store: {
+        // نحاكي التخزين عبر CockroachDB
+        save: async (session) => {
+          await pool.query(
+            `INSERT INTO whatsapp_remote_auth (session_id, data)
+             VALUES ('render-free', $1)
+             ON CONFLICT (session_id) DO UPDATE SET data = $1`,
+            [session]
+          );
+        },
+        load: async () => {
+          const result = await pool.query(
+            "SELECT data FROM whatsapp_remote_auth WHERE session_id = 'render-free' LIMIT 1"
+          );
+          return result.rows.length ? result.rows[0].data : null;
+        },
+        remove: async () => {
+          await pool.query("DELETE FROM whatsapp_remote_auth WHERE session_id = 'render-free'");
+        },
+      },
+      backupSyncIntervalMs: 300000, // كل 5 دقائق يزامن DB
     }),
     puppeteer: {
       headless: true,
@@ -87,25 +89,28 @@ async function saveSession(session) {
     console.log("🤖 WhatsApp Bot Ready!");
   });
 
-  client.on("authenticated", async (session) => {
-    await saveSession(session);
-  });
-
   client.on("auth_failure", (msg) => {
     console.error("❌ Auth failed:", msg);
   });
 
-  client.initialize();
+  client.on("disconnected", (reason) => {
+    console.warn("⚠️ Disconnected:", reason);
+    setTimeout(() => {
+      client.initialize();
+    }, 10000);
+  });
+
+  await client.initialize();
 })();
 
-// المسارات
+// 🧠 مسارات HTTP
 app.get("/", (req, res) => {
-  res.send("Hello World from WhatsApp Bot!");
+  res.send("✅ WhatsApp bot is running on Render Free Plan!");
 });
 
 app.get("/whatsapp/login", async (req, res) => {
-  if (tokenQr === null) return res.send("Please try again in a few seconds...");
-  if (tokenQr === false) return res.send("Login successful!");
+  if (tokenQr === null) return res.send("Please wait...");
+  if (tokenQr === false) return res.send("✅ Already logged in!");
   qr2.toDataURL(tokenQr, (err, src) => {
     if (err) return res.status(500).send("Error generating QR");
     return res.render("qr", { img: src });
@@ -119,14 +124,24 @@ app.post("/whatsapp/sendmessage/", async (req, res) => {
     if (!req.body.message) throw new Error("Message is required");
     if (!req.body.phone) throw new Error("Phone number is required");
 
+    if (!client || !client.info)
+      throw new Error("WhatsApp client not ready yet");
+
     await client.sendMessage(`${req.body.phone}@c.us`, req.body.message);
-    res.json({ ok: true, message: "Message sent" });
-  } catch (error) {
-    console.error("Error:", error);
-    res.status(500).json({ ok: false, message: "Message not sent" });
+    res.json({ ok: true, message: "Message sent successfully" });
+  } catch (err) {
+    console.error("❌ Error sending message:", err);
+    res.status(500).json({ ok: false, error: err.message });
   }
 });
 
-app.listen(PORT, () => {
-  console.log(`🚀 Server running on port ${PORT}`);
+// 🧹 إنهاء نظيف عند SIGTERM
+process.on("SIGTERM", async () => {
+  console.log("🛑 Graceful shutdown...");
+  try {
+    await pool.end();
+  } catch {}
+  process.exit(0);
 });
+
+app.listen(PORT, () => console.log(`🚀 Server running on port ${PORT}`));

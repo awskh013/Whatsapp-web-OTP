@@ -1,15 +1,15 @@
-# Use lightweight Node image
+# Use a lightweight Node image
 FROM node:22-bullseye
 
 WORKDIR /usr/src/app
 
-# نسخ ملفات المشروع وتثبيت dependencies
+# Copy and install dependencies
 COPY package*.json ./
 RUN npm install --omit=dev
 
 COPY . .
 
-# Puppeteer dependencies
+# Install puppeteer dependencies
 RUN apt-get update && apt-get install -y \
     libasound2 \
     libatk1.0-0 \
@@ -37,11 +37,7 @@ RUN apt-get update && apt-get install -y \
     wget \
     --no-install-recommends && rm -rf /var/lib/apt/lists/*
 
-# متغيرات البيئة
 ENV PORT=3000
-
-# فتح المنفذ
 EXPOSE 3000
 
-# أمر التشغيل
 CMD ["npm", "start"]

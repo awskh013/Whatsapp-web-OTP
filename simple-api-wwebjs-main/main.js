@@ -1,3 +1,4 @@
+process.env.NODE_OPTIONS = "--max-old-space-size=256";
 const express = require("express");
 const { MongoStore } = require("wwebjs-mongo");
 const { Client, RemoteAuth } = require("whatsapp-web.js");
@@ -43,17 +44,22 @@ let client;
         backupSyncIntervalMs: 60000,
       }),
       puppeteer: {
-        executablePath: "/opt/render/project/.render/chromium",
-        headless: true,
-        args: [
-          "--no-sandbox",
-          "--disable-setuid-sandbox",
-          "--disable-dev-shm-usage",
-          "--single-process",
-          "--no-zygote",
-          "--disable-gpu",
-        ],
-      },
+  executablePath: process.env.PUPPETEER_EXECUTABLE_PATH || "/usr/bin/chromium",
+  headless: true,
+  args: [
+    "--no-sandbox",
+    "--disable-setuid-sandbox",
+    "--disable-dev-shm-usage",
+    "--disable-extensions",
+    "--disable-background-networking",
+    "--disable-default-apps",
+    "--disable-sync",
+    "--mute-audio",
+    "--single-process",
+    "--no-zygote",
+    "--disable-gpu",
+  ],
+},
     });
 
     client.on("qr", (qr) => {
@@ -72,17 +78,14 @@ let client;
     });
 
     client.on("disconnected", async (reason) => {
-      console.warn("⚠️ Disconnected:", reason);
-      try {
-        await client.destroy();
-      } catch (err) {
-        console.error("Error destroying client:", err.message);
-      }
-      setTimeout(async () => {
-        console.log("♻️ Reinitializing WhatsApp client...");
-        await client.initialize();
-      }, 15000);
-    });
+  console.warn("⚠️ Disconnected:", reason);
+  tokenQr = null;
+  try {
+    await client.logout();
+  } catch {}
+  console.log("♻️ Attempting to reconnect in 10s...");
+  setTimeout(() => client.initialize(), 10000);
+});
 
     await client.initialize();
   } catch (err) {

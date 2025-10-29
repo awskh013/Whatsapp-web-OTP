@@ -35,8 +35,17 @@ RUN apt-get update && apt-get install -y \
     lsb-release \
     xdg-utils \
     wget \
+    unzip \
     --no-install-recommends && rm -rf /var/lib/apt/lists/*
 
+# Install Chromium manually for puppeteer-core
+RUN wget https://storage.googleapis.com/chromium-browser-snapshots/Linux_x64/1181136/chrome-linux.zip \
+    && unzip chrome-linux.zip \
+    && mv chrome-linux /usr/local/chromium \
+    && rm chrome-linux.zip
+
+# Set Chromium path for puppeteer-core
+ENV PUPPETEER_EXECUTABLE_PATH=/usr/local/chromium/chrome
 ENV PORT=3000
 EXPOSE 3000
 

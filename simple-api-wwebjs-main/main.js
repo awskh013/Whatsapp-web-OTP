@@ -3,6 +3,7 @@ const { MongoStore } = require("wwebjs-mongo");
 const { Client, RemoteAuth } = require("whatsapp-web.js");
 const qr2 = require("qrcode");
 const mongoose = require("mongoose");
+const puppeteer = require("puppeteer-core");
 require("dotenv").config();
 
 const app = express();
@@ -37,11 +38,12 @@ let client;
     // ==========================
     client = new Client({
       authStrategy: new RemoteAuth({
-        clientId: "render-free-stable", // ثابت حتى بين restarts
+        clientId: "render-free-stable",
         store,
-        backupSyncIntervalMs: 60000, // كل دقيقة
+        backupSyncIntervalMs: 60000,
       }),
       puppeteer: {
+        executablePath: "/opt/render/project/.render/chromium",
         headless: true,
         args: [
           "--no-sandbox",
@@ -54,9 +56,6 @@ let client;
       },
     });
 
-    // ==========================
-    // 📱 Events
-    // ==========================
     client.on("qr", (qr) => {
       tokenQr = qr;
       console.log("📱 QR generated (scan to login)");
@@ -99,9 +98,9 @@ app.get("/", (req, res) => {
 });
 
 app.get("/whatsapp/login", async (req, res) => {
-  if (tokenQr === null && client)
-    return res.send("⏳ Client initializing, please refresh in a few seconds...");
-  if (tokenQr === false) return res.send("✅ Already logged in!");
+  if (!client || !client.info)
+    return res.send("⏳ Client initializing or not logged in yet...");
+  if (client.info.wid) return res.send("✅ Already logged in!");
 
   qr2.toDataURL(tokenQr, (err, src) => {
     if (err) return res.status(500).send("Error generating QR");

@@ -14,14 +14,8 @@
     "ejs": "^3.1.10",
     "qrcode": "^1.5.4",
     "whatsapp-web.js": "^1.26.0",
-    "puppeteer": "^22.0.0",
+    "puppeteer-core": "^22.0.0",
     "wwebjs-mongo": "^1.1.0",
     "mongoose": "^7.6.1"
-  },
-  "puppeteer": {
-    "args": [
-      "--no-sandbox",
-      "--disable-setuid-sandbox"
-    ]
   }
 }

@@ -9,7 +9,7 @@ COPY . .
 
 # تثبيت Chromium الرسمي من Debian
 RUN apt-get update && apt-get install -y \
-    chromium-browser \
+    chromium \
     libasound2 \
     libatk1.0-0 \
     libatk-bridge2.0-0 \
@@ -38,7 +38,7 @@ RUN apt-get update && apt-get install -y \
     --no-install-recommends && rm -rf /var/lib/apt/lists/*
 
 # تحديد مسار Chromium الرسمي
-ENV PUPPETEER_EXECUTABLE_PATH=/usr/bin/chromium-browser
+ENV PUPPETEER_EXECUTABLE_PATH=/usr/bin/chromium
 ENV PORT=3000
 EXPOSE 3000
 

@@ -27,22 +27,19 @@ let client;
     });
     console.log("✅ Connected to MongoDB Atlas");
 
-    // ==========================
-    // 🟢 إنشاء MongoStore بعد الاتصال
-    // ==========================
     const store = new MongoStore({
       mongoose: mongoose,
-      collectionName: "sessions"
+      collectionName: "sessions",
     });
 
     // ==========================
-    // 🧠 إعداد عميل WhatsApp مع RemoteAuth
+    // ⚙️ إعداد WhatsApp Client
     // ==========================
     client = new Client({
       authStrategy: new RemoteAuth({
-        clientId: "render-free",
-        store: store,
-        backupSyncIntervalMs: 300000 // كل 5 دقائق
+        clientId: "render-free-stable", // ثابت حتى بين restarts
+        store,
+        backupSyncIntervalMs: 60000, // كل دقيقة
       }),
       puppeteer: {
         headless: true,
@@ -53,8 +50,8 @@ let client;
           "--single-process",
           "--no-zygote",
           "--disable-gpu",
-        ]
-      }
+        ],
+      },
     });
 
     // ==========================
@@ -62,25 +59,33 @@ let client;
     // ==========================
     client.on("qr", (qr) => {
       tokenQr = qr;
-      console.log("📱 QR generated");
+      console.log("📱 QR generated (scan to login)");
     });
 
     client.on("ready", () => {
       tokenQr = false;
-      console.log("🤖 WhatsApp Bot Ready!");
+      console.log("🤖 WhatsApp Bot Ready and Logged In!");
     });
 
     client.on("auth_failure", (msg) => {
       console.error("❌ Auth failed:", msg);
+      tokenQr = null;
     });
 
-    client.on("disconnected", (reason) => {
+    client.on("disconnected", async (reason) => {
       console.warn("⚠️ Disconnected:", reason);
-      setTimeout(() => client.initialize(), 10000);
+      try {
+        await client.destroy();
+      } catch (err) {
+        console.error("Error destroying client:", err.message);
+      }
+      setTimeout(async () => {
+        console.log("♻️ Reinitializing WhatsApp client...");
+        await client.initialize();
+      }, 15000);
     });
 
     await client.initialize();
-
   } catch (err) {
     console.error("❌ MongoDB connection failed:", err);
   }
@@ -94,8 +99,10 @@ app.get("/", (req, res) => {
 });
 
 app.get("/whatsapp/login", async (req, res) => {
-  if (tokenQr === null) return res.send("Please wait...");
+  if (tokenQr === null && client)
+    return res.send("⏳ Client initializing, please refresh in a few seconds...");
   if (tokenQr === false) return res.send("✅ Already logged in!");
+
   qr2.toDataURL(tokenQr, (err, src) => {
     if (err) return res.status(500).send("Error generating QR");
     return res.render("qr", { img: src });
@@ -110,7 +117,7 @@ app.post("/whatsapp/sendmessage/", async (req, res) => {
     if (!req.body.phone) throw new Error("Phone number is required");
 
     if (!client || !client.info)
-      throw new Error("WhatsApp client not ready yet");
+      throw new Error("WhatsApp client not ready yet. Try again in a few seconds.");
 
     await client.sendMessage(`${req.body.phone}@c.us`, req.body.message);
     res.json({ ok: true, message: "Message sent successfully" });

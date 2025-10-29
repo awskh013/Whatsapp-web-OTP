@@ -1,16 +1,15 @@
-# Use a lightweight Node image
 FROM node:22-bullseye
 
 WORKDIR /usr/src/app
 
-# Copy and install dependencies
 COPY package*.json ./
 RUN npm install --omit=dev
 
 COPY . .
 
-# Install puppeteer dependencies
+# تثبيت Chromium الرسمي من Debian
 RUN apt-get update && apt-get install -y \
+    chromium \
     libasound2 \
     libatk1.0-0 \
     libatk-bridge2.0-0 \
@@ -38,14 +37,8 @@ RUN apt-get update && apt-get install -y \
     unzip \
     --no-install-recommends && rm -rf /var/lib/apt/lists/*
 
-# Install Chromium manually for puppeteer-core
-RUN wget https://storage.googleapis.com/chromium-browser-snapshots/Linux_x64/1181136/chrome-linux.zip \
-    && unzip chrome-linux.zip \
-    && mv chrome-linux /usr/local/chromium \
-    && rm chrome-linux.zip
-
-# Set Chromium path for puppeteer-core
-ENV PUPPETEER_EXECUTABLE_PATH=/usr/local/chromium/chrome
+# تحديد مسار Chromium الرسمي
+ENV PUPPETEER_EXECUTABLE_PATH=/usr/bin/chromium
 ENV PORT=3000
 EXPOSE 3000
 

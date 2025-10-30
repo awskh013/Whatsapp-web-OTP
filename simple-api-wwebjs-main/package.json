@@ -1,8 +1,8 @@
 {
   "name": "whatsapp-bot",
-  "version": "2.0.0",
-  "main": "main.js",
+  "version": "2.1.0",
   "type": "module",
+  "main": "main.js",
   "scripts": {
     "start": "node main.js"
   },

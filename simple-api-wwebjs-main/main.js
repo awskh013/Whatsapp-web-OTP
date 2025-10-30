@@ -53,19 +53,23 @@ async function initClient() {
       store,
       backupSyncIntervalMs: 300000, // كل 5 دقائق يحدّث الجلسة
     }),
-    puppeteer: {
-      headless: true,
-      executablePath: "/usr/bin/chromium",
-      args: [
-        "--no-sandbox",
-        "--disable-setuid-sandbox",
-        "--disable-dev-shm-usage",
-        "--disable-extensions",
-        "--disable-gpu",
-        "--no-zygote",
-        "--single-process",
-      ],
-    },
+   puppeteer: {
+  headless: true,
+  executablePath: "/usr/bin/chromium",
+  args: [
+    "--no-sandbox",
+    "--disable-setuid-sandbox",
+    "--disable-gpu",
+    "--disable-extensions",
+    "--disable-dev-shm-usage",
+    "--no-zygote",
+    "--single-process",
+    "--window-size=800,600",
+    "--disable-background-timer-throttling",
+    "--disable-renderer-backgrounding",
+    "--disable-backgrounding-occluded-windows"
+  ],
+},
     takeoverOnConflict: true,
     restartOnAuthFail: true,
   });

@@ -95,20 +95,23 @@ async function initClient() {
   let hasSession = false;
   try { hasSession = (await mongoose.connection.db.collection("sessions").countDocuments()) > 0; } catch (e) {}
   const forceP = String(process.env.FORCE_PUPPETEER || "").toLowerCase() === "true";
-  const puppeteerOptions = !hasSession || forceP ? {
-    headless: true,
-    executablePath: process.env.PUPPETEER_EXECUTABLE_PATH || "/usr/bin/chromium",
-    args: [
-      "--no-sandbox",
-      "--disable-setuid-sandbox",
-      "--disable-gpu",
-      "--disable-extensions",
-      "--disable-dev-shm-usage",
-      "--no-zygote",
-      "--single-process",
-      "--window-size=800,600",
-    ],
-  } : undefined;
+  const puppeteerOptions = {
+  headless: true,
+  executablePath: process.env.PUPPETEER_EXECUTABLE_PATH || "/usr/bin/chromium",
+  args: [
+    "--no-sandbox",
+    "--disable-setuid-sandbox",
+    "--disable-gpu",
+    "--disable-extensions",
+    "--disable-dev-shm-usage",
+    "--no-zygote",
+    "--single-process",
+    "--renderer-process-limit=1",
+    "--no-crash-upload",
+    "--window-size=800,600",
+  ],
+};
+
 
   if (client) {
     try { await client.destroy(); } catch(e) {}

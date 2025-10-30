@@ -98,18 +98,26 @@ async function initClient() {
   const puppeteerOptions = {
   headless: true,
   executablePath: process.env.PUPPETEER_EXECUTABLE_PATH || "/usr/bin/chromium",
-  args: [
-    "--no-sandbox",
-    "--disable-setuid-sandbox",
-    "--disable-gpu",
-    "--disable-extensions",
-    "--disable-dev-shm-usage",
-    "--no-zygote",
-    "--single-process",
-    "--renderer-process-limit=1",
-    "--no-crash-upload",
-    "--window-size=800,600",
-  ],
+ args: [
+  "--no-sandbox",
+  "--disable-setuid-sandbox",
+  "--disable-dev-shm-usage",
+  "--single-process",
+  "--no-zygote",
+  "--disable-gpu",
+  "--disable-extensions",
+  "--disable-background-networking",
+  "--disable-background-timer-throttling",
+  "--disable-client-side-phishing-detection",
+  "--disable-default-apps",
+  "--disable-sync",
+  "--disable-translate",
+  "--metrics-recording-only",
+  "--mute-audio",
+  "--no-first-run",
+  "--safebrowsing-disable-auto-update",
+  "--disable-renderer-backgrounding"
+],
 };
 
 

@@ -42,34 +42,29 @@ async function initClient() {
     collectionName: "sessions",
   });
 
-  const hasSession =
-    (await mongoose.connection.db
-      .collection("sessions")
-      .countDocuments()) > 0;
-
   client = new Client({
     authStrategy: new RemoteAuth({
       clientId: "render-stable-client",
       store,
-      backupSyncIntervalMs: 300000, // كل 5 دقائق يحدّث الجلسة
+      backupSyncIntervalMs: 300000, // تحديث الجلسة كل 5 دقائق
     }),
-   puppeteer: {
-  headless: true,
-  executablePath: "/usr/bin/chromium",
-  args: [
-    "--no-sandbox",
-    "--disable-setuid-sandbox",
-    "--disable-gpu",
-    "--disable-extensions",
-    "--disable-dev-shm-usage",
-    "--no-zygote",
-    "--single-process",
-    "--window-size=800,600",
-    "--disable-background-timer-throttling",
-    "--disable-renderer-backgrounding",
-    "--disable-backgrounding-occluded-windows"
-  ],
-},
+    puppeteer: {
+      headless: true,
+      executablePath: process.env.PUPPETEER_EXECUTABLE_PATH || "/usr/bin/chromium-browser",
+      args: [
+        "--no-sandbox",
+        "--disable-setuid-sandbox",
+        "--disable-gpu",
+        "--disable-extensions",
+        "--disable-dev-shm-usage",
+        "--no-zygote",
+        "--single-process",
+        "--window-size=800,600",
+        "--disable-background-timer-throttling",
+        "--disable-renderer-backgrounding",
+        "--disable-backgrounding-occluded-windows",
+      ],
+    },
     takeoverOnConflict: true,
     restartOnAuthFail: true,
   });
@@ -93,17 +88,17 @@ async function initClient() {
   client.on("disconnected", async (reason) => {
     console.warn("⚠️ Disconnected:", reason);
     clientReady = false;
-    try {
-      await client.destroy();
-    } catch {}
-    console.log("♻️ Restarting client in 10 seconds...");
-    setTimeout(initClient, 10000);
+    try { await client.destroy(); } catch {}
+    console.log("♻️ Restarting client in 20s...");
+    setTimeout(initClient, 20000);
   });
 
   try {
     await client.initialize();
   } catch (err) {
-    console.error("❌ Initialization failed:", err);
+    console.error("❌ Puppeteer init failed, retrying in 15s...", err.message);
+    setTimeout(initClient, 15000);
+    return;
   }
 }
 
@@ -155,7 +150,8 @@ process.on("SIGTERM", async () => {
 // 🔄 Keep Render Alive
 // ==========================
 setInterval(() => {
-  fetch(`https://${process.env.RENDER_EXTERNAL_URL || ""}`).catch(() => {});
+  if (process.env.RENDER_EXTERNAL_URL)
+    fetch(`https://${process.env.RENDER_EXTERNAL_URL}`).catch(() => {});
 }, 600000); // كل 10 دقائق
 
 // ==========================

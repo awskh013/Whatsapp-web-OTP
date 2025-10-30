@@ -1,75 +1,92 @@
-await mongoose.connect(process.env.MONGO_URL, {
-  dbName: "whatsapp-bot",
-  useNewUrlParser: true,
-  useUnifiedTopology: true,
-});
-console.log("✅ Connected to MongoDB Atlas");
+// ==========================
+// 🟢 WhatsApp Bot — Render Optimized
+// ==========================
+import express from "express";
+import mongoose from "mongoose";
+import { MongoStore } from "wwebjs-mongo";
+import { Client, RemoteAuth } from "whatsapp-web.js";
+import qr from "qrcode";
+import dotenv from "dotenv";
 
-const store = new MongoStore({
-  mongoose: mongoose,
-  collectionName: "sessions",
-});
+dotenv.config();
 
-const hasSession =
-  (await mongoose.connection.db
-    .collection("sessions")
-    .countDocuments()) > 0;
+const app = express();
+app.use(express.json());
+app.use(express.urlencoded({ extended: true }));
+app.set("view engine", "ejs");
+app.set("views", "pages");
 
-// 🧠 هذا أهم تعديل: لا تشغّل Puppeteer إن كان فيه جلسة محفوظة
-const puppeteerOptions = hasSession
-  ? undefined
-  : {
-      headless: true,
-      args: [
-        "--no-sandbox",
-        "--disable-setuid-sandbox",
-        "--disable-dev-shm-usage",
-        "--disable-extensions",
-        "--disable-gpu",
-        "--no-zygote",
-        "--single-process"
-      ],
-    };
+const PORT = process.env.PORT || 3000;
 
-client = new Client({
-  authStrategy: new RemoteAuth({
-    clientId: "render-stable-client",
-    store,
-    backupSyncIntervalMs: 300000,
-  }),
-  puppeteer: puppeteerOptions,
-  takeoverOnConflict: true,
-  restartOnAuthFail: true,
-  webVersionCache: { type: "none" },
-});
+let client;
+let clientReady = false;
+let tokenQr = null;
 
-client.on("qr", (qr) => {
-  tokenQr = qr;
-  console.log("📱 QR generated — Scan it to login.");
-});
-
-client.on("ready", () => {
-  tokenQr = false;
-  clientReady = true;
-  console.log("🤖 WhatsApp Bot Ready and Logged In!");
-});
-
-client.on("auth_failure", (msg) => {
-  console.error("❌ Auth failed:", msg);
-  tokenQr = null;
-  clientReady = false;
-});
-
-client.on("disconnected", async (reason) => {
-  console.warn("⚠️ Disconnected:", reason);
-  clientReady = false;
+// ==========================
+// 🧠 Connect to MongoDB
+// ==========================
+(async () => {
   try {
-    await client.destroy();
-  } catch {}
-  console.log("♻️ Reinitializing WhatsApp client...");
-  setTimeout(async () => {
-    await client.initialize();
-  }, 10000);
-});
+    await mongoose.connect(process.env.MONGO_URL, {
+      dbName: "whatsapp-bot",
+      useNewUrlParser: true,
+      useUnifiedTopology: true,
+    });
+    console.log("✅ Connected to MongoDB Atlas");
 
-await client.initialize();
+    const store = new MongoStore({
+      mongoose,
+      collectionName: "sessions",
+    });
+
+    const sessionCount = await mongoose.connection.db
+      .collection("sessions")
+      .countDocuments();
+
+    const hasSession = sessionCount > 0;
+    if (hasSession) {
+      console.log("💾 Session found in Mongo — reusing it.");
+    } else {
+      console.log("🆕 No session found — will generate new QR.");
+    }
+
+    // ==========================
+    // ⚙️ Setup WhatsApp Client
+    // ==========================
+    const puppeteerOptions = hasSession
+      ? undefined
+      : {
+          headless: true,
+          args: [
+            "--no-sandbox",
+            "--disable-setuid-sandbox",
+            "--disable-dev-shm-usage",
+            "--disable-extensions",
+            "--disable-gpu",
+            "--no-zygote",
+            "--single-process",
+            "--disable-background-networking",
+            "--disable-sync",
+            "--disable-default-apps",
+            "--mute-audio",
+          ],
+        };
+
+    client = new Client({
+      authStrategy: new RemoteAuth({
+        clientId: "render-stable-client",
+        store,
+        backupSyncIntervalMs: 300000, // كل 5 دقائق
+      }),
+      puppeteer: puppeteerOptions,
+      takeoverOnConflict: true,
+      restartOnAuthFail: true,
+      webVersionCache: { type: "none" },
+    });
+
+    // ==========================
+    // 🎯 WhatsApp Events
+    // ==========================
+    client.on("qr", (qrCode) => {
+      tokenQr = qrCode;
+      c

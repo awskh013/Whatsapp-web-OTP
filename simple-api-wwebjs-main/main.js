@@ -1,9 +1,12 @@
 import express from "express";
 import mongoose from "mongoose";
-import { Client, RemoteAuth } from "whatsapp-web.js";
-import { MongoStore } from "wwebjs-mongo";
 import dotenv from "dotenv";
 import qr2 from "qrcode";
+
+// ✅ الطريقة الصحيحة لاستيراد مكتبة whatsapp-web.js في بيئة ES Modules
+import pkg from "whatsapp-web.js";
+import { MongoStore } from "wwebjs-mongo";
+const { Client, RemoteAuth } = pkg;
 
 dotenv.config();
 

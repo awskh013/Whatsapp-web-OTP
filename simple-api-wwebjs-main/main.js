@@ -4,7 +4,6 @@ import pkg from "whatsapp-web.js";
 const { Client, RemoteAuth } = pkg;
 import { MongoStore } from "wwebjs-mongo";
 import dotenv from "dotenv";
-import fs from "fs";
 
 dotenv.config();
 
@@ -13,14 +12,9 @@ const PORT = process.env.PORT || 3000;
 const MONGODB_URI = process.env.MONGODB_URI;
 const CLIENT_ID = "render-stable-client";
 
-if (!MONGODB_URI) {
-  console.error("❌ ERROR: Missing MONGODB_URI in environment variables.");
-  process.exit(1);
-}
-
-// ----------------------------------------------------
+// ============================================================
 // 🧠 Connect to MongoDB
-// ----------------------------------------------------
+// ============================================================
 console.log("⏳ Connecting to MongoDB Atlas...");
 await mongoose.connect(MONGODB_URI);
 console.log("✅ Connected to MongoDB Atlas");
@@ -30,27 +24,23 @@ const collections = await db.db.listCollections().toArray();
 const collectionNames = collections.map((c) => c.name);
 console.log("ℹ️ collections in DB:", collectionNames.join(", "));
 
-// ----------------------------------------------------
-// 🔍 Detect existing WhatsApp session
-// ----------------------------------------------------
 const hasSession = collectionNames.some((n) =>
   n.startsWith(`whatsapp-RemoteAuth-${CLIENT_ID}`)
 );
+console.log(
+  hasSession
+    ? "✅ Found existing WhatsApp session data"
+    : "ℹ️ No existing session found (first login expected)"
+);
 
-if (hasSession) {
-  console.log("✅ Found existing WhatsApp session data");
-} else {
-  console.log("ℹ️ No existing session found (first-time login expected)");
-}
-
-// ----------------------------------------------------
+// ============================================================
 // ⚙️ WhatsApp Client Setup
-// ----------------------------------------------------
+// ============================================================
 const store = new MongoStore({ mongoose: mongoose });
 const client = new Client({
   authStrategy: new RemoteAuth({
     store,
-    backupSyncIntervalMs: 60000, // 1 min backup interval
+    backupSyncIntervalMs: 60000,
     clientId: CLIENT_ID,
   }),
   puppeteer: {
@@ -66,36 +56,34 @@ const client = new Client({
   },
 });
 
-// ----------------------------------------------------
-// 🔁 Client Event Handlers
-// ----------------------------------------------------
-client.on("qr", (qr) => {
-  console.log("📱 QR generated — open your Render logs to scan it!");
-});
-
-client.on("authenticated", () => {
-  console.log("✅ WhatsApp authenticated");
-});
-
-client.on("ready", () => {
-  console.log("🤖 WhatsApp client READY");
-  startServer(); // Start express server only now
-});
-
+// ============================================================
+// 🔁 Client Events
+// ============================================================
+client.on("qr", () => console.log("📱 QR generated — scan in Render logs!"));
+client.on("authenticated", () => console.log("✅ WhatsApp authenticated"));
+client.on("ready", () => console.log("🤖 WhatsApp client READY"));
+client.on("remote_session_saved", () =>
+  console.log("💾 Remote session saved to MongoDB")
+);
 client.on("disconnected", (reason) => {
   console.log("⚠️ WhatsApp disconnected:", reason);
-  console.log("🔁 Reinitializing client in 15s...");
+  console.log("🔁 Reinitializing in 15s...");
   setTimeout(() => client.initialize(), 15000);
 });
 
-client.on("remote_session_saved", () => {
-  console.log("💾 Remote session saved to MongoDB");
-});
+// ============================================================
+// 🚀 Start Express Immediately (so Render sees a live port)
+// ============================================================
+app.get("/", (_, res) =>
+  res.send("✅ WhatsApp bot is running and initializing in background.")
+);
+app.listen(PORT, "0.0.0.0", () =>
+  console.log(`🚀 Server listening on 0.0.0.0:${PORT}`)
+);
 
-// ----------------------------------------------------
-// ⏳ Initialize Client
-// ----------------------------------------------------
-console.log("⏳ Waiting 10s before initializing client...");
+// ============================================================
+// ⏳ Initialize Client in Background
+// ============================================================
 setTimeout(async () => {
   try {
     console.log("⚙️ Initializing WhatsApp client...");
@@ -104,11 +92,11 @@ setTimeout(async () => {
   } catch (err) {
     console.error("❌ client.initialize() failed:", err);
   }
-}, 10000);
+}, 5000);
 
-// ----------------------------------------------------
-// 💾 Graceful Shutdown for Render (SIGTERM)
-// ----------------------------------------------------
+// ============================================================
+// 💾 Handle SIGTERM (Render graceful shutdown)
+// ============================================================
 process.on("SIGTERM", async () => {
   console.log("🛑 SIGTERM received — saving session before shutdown...");
   try {
@@ -119,17 +107,3 @@ process.on("SIGTERM", async () => {
   }
   process.exit(0);
 });
-
-// ----------------------------------------------------
-// 🚀 Express Server (starts only when client READY)
-// ----------------------------------------------------
-function startServer() {
-  if (app.listening) return;
-  app.get("/", (req, res) => {
-    res.send("✅ WhatsApp Bot is running and connected!");
-  });
-  app.listen(PORT, () => {
-    console.log(`🚀 Server listening on ${PORT}`);
-    app.listening = true;
-  });
-}

@@ -243,7 +243,7 @@ app.post("/whatsapp/send", async (req, res) => {
     const { phone, message } = req.body;
     if (!phone || !message) return res.status(400).json({ ok: false, error: "phone & message required" });
     if (!clientReady) return res.status(503).json({ ok: false, error: "Client not ready" });
-    await client.sendMessage(`${phone}@c.us`, message);
+    await client.sendMessage(`${phone}@c.us`, message , { sendSeen: false });
     return res.json({ ok: true, message: "Message sent" });
   } catch (err) {
     console.error("❌ send error:", err);

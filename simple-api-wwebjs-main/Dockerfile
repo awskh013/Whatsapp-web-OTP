@@ -50,11 +50,11 @@ ENV PUPPETEER_EXECUTABLE_PATH=/usr/bin/chromium
 
 WORKDIR /app
 
-# Copy package files first (layer caching — only re-runs npm ci on changes)
-COPY package.json package-lock.json* ./
+# Copy package file
+COPY package.json ./
 
 # Install all dependencies (including optional ones needed by RemoteAuth)
-RUN npm ci --omit=dev
+RUN npm install --omit=dev
 
 # Copy source
 COPY . .

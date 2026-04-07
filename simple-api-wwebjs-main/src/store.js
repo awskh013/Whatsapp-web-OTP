@@ -1,186 +1,125 @@
 'use strict';
 
-const mongoose = require('mongoose');
-const fs       = require('fs');
-const fsp      = require('fs').promises;
-const path     = require('path');
+const { MongoClient, Binary } = require('mongodb');
+const path = require('path');
+const fs = require('fs');
 
-const SESSION_DIR = '/app/.wwebjs_auth';
-const UPDATE_INTERVAL_MS = 30_000; // sync to MongoDB every 30s
-
-// ─── Mongoose schema ──────────────────────────────────────────────────────────
-const sessionSchema = new mongoose.Schema({
-  session_name: { type: String, required: true, unique: true },
-  zip_data:     { type: Buffer, required: true },
-  updated_at:   { type: Date,   default: Date.now },
-});
-const Session = mongoose.models.Session
-  || mongoose.model('Session', sessionSchema, 'sessions');
-
-// ─── helpers ──────────────────────────────────────────────────────────────────
-
-/** Make sure the auth directory exists */
-async function ensureDir() {
-  await fsp.mkdir(SESSION_DIR, { recursive: true });
-}
-
-/** Is this a valid non-empty zip buffer? */
-function isValidZip(buf) {
-  // ZIP magic bytes: PK (0x50 0x4B)
-  return Buffer.isBuffer(buf) && buf.length > 22
-    && buf[0] === 0x50 && buf[1] === 0x4B;
-}
-
-// ─── MongoStore ───────────────────────────────────────────────────────────────
+/**
+ * MongoDB store for whatsapp-web.js RemoteAuth.
+ *
+ * RemoteAuth calls these methods with these exact signatures:
+ *
+ *  sessionExists({ session })
+ *    → session = sessionName  e.g. "RemoteAuth-primary"
+ *    → return Boolean
+ *
+ *  save({ session })
+ *    → session = full path WITHOUT .zip  e.g. ".wwebjs_auth/RemoteAuth-primary"
+ *    → zip lives at  session + ".zip"
+ *    → read that zip → store in DB keyed by path.basename(session)
+ *
+ *  extract({ session, path })
+ *    → session = sessionName  e.g. "RemoteAuth-primary"
+ *    → path   = full destination path  e.g. ".wwebjs_auth/RemoteAuth-primary.zip"
+ *    → read from DB → write to path
+ *
+ *  delete({ session })
+ *    → session = sessionName  e.g. "RemoteAuth-primary"
+ */
 class MongoStore {
-
   constructor() {
-    this._autoSaveTimers = {}; // per-session interval handles
+    this._client = null;
+    this._col    = null;
   }
 
-  // ── init ────────────────────────────────────────────────────────────────────
+  /** Call once before using. Connects and ensures index. */
   async init() {
-    if (mongoose.connection.readyState === 1) return;
     const uri = process.env.MONGODB_URI;
-    if (!uri) throw new Error('MONGODB_URI is not set');
-    await mongoose.connect(uri, {
-      dbName: process.env.MONGODB_DB || 'whatsapp-bot',
+    if (!uri) throw new Error('MONGODB_URI environment variable is not set');
+
+    this._client = new MongoClient(uri, {
+      serverSelectionTimeoutMS: 10_000,
+      connectTimeoutMS:         10_000,
     });
-    console.log('[MongoDB] Connected ✓');
+
+    await this._client.connect();
+    const db    = this._client.db('whatsapp_bot');
+    this._col   = db.collection('sessions');
+
+    await this._col.createIndex({ session_name: 1 }, { unique: true });
+    console.log('[MongoDB] Connected — collection: sessions ✓');
   }
 
-  // ── sessionExists ────────────────────────────────────────────────────────────
-  async sessionExists(options) {
-    const name = options.session;
-    const doc  = await Session.findOne({ session_name: name }).lean();
-    if (!doc) return false;
+  // ─── Store interface ────────────────────────────────────────────────────────
 
-    // Validate stored zip — if corrupted, remove it so wwebjs asks for a fresh QR
-    if (!isValidZip(doc.zip_data)) {
-      console.warn(`[MongoDB] Corrupted session detected (${name}) — deleting`);
-      await Session.deleteOne({ session_name: name });
+  async sessionExists({ session }) {
+    try {
+      const count = await this._col.countDocuments({ session_name: session });
+      return count > 0;
+    } catch (err) {
+      console.error('[MongoDB] sessionExists error:', err.message);
       return false;
     }
-
-    console.log(`[MongoDB] Valid session found: ${name}`);
-    return true;
   }
 
-  // ── save ─────────────────────────────────────────────────────────────────────
-  async save(options) {
-    const name    = options.session;
-    const zipPath = path.join(SESSION_DIR, `${name}.zip`);
+  /**
+   * RemoteAuth passes the FULL PATH (no .zip).
+   * We read path + ".zip", store binary in DB, keyed by basename.
+   */
+  async save({ session: sessionPath }) {
+    const zipPath    = sessionPath + '.zip';
+    const sessionKey = path.basename(sessionPath); // e.g. "RemoteAuth-primary"
 
     try {
-      await ensureDir();
-
       if (!fs.existsSync(zipPath)) {
-        console.warn(`[MongoDB] save called but zip not found on disk: ${zipPath}`);
-        return;
+        throw new Error(`Zip not found at: ${zipPath}`);
       }
+      const data = fs.readFileSync(zipPath);
 
-      const buf = await fsp.readFile(zipPath);
-
-      if (!isValidZip(buf)) {
-        console.warn(`[MongoDB] save skipped — zip on disk is invalid (${name})`);
-        return;
-      }
-
-      await Session.findOneAndUpdate(
-        { session_name: name },
-        { zip_data: buf, updated_at: new Date() },
-        { upsert: true, new: true }
+      await this._col.updateOne(
+        { session_name: sessionKey },
+        {
+          $set: {
+            session_name: sessionKey,
+            zip_data:     new Binary(data),
+            updated_at:   new Date(),
+          },
+        },
+        { upsert: true }
       );
 
-      console.log(`[MongoDB] Session saved/updated: ${name}`);
-
-      // Start auto-save loop after first successful save
-      this._startAutoSave(name, zipPath);
-
+      console.log(`[MongoDB] Session "${sessionKey}" saved ✓ (${data.length} bytes)`);
     } catch (err) {
       console.error('[MongoDB] save error:', err.message);
       throw err;
     }
   }
 
-  // ── extract ───────────────────────────────────────────────────────────────────
-  async extract(options) {
-    const name    = options.session;
-    const zipPath = path.join(SESSION_DIR, `${name}.zip`);
-
+  /**
+   * RemoteAuth passes sessionName + destination path (full path including .zip).
+   * We read from DB and write the zip to destPath.
+   */
+  async extract({ session: sessionKey, path: destPath }) {
     try {
-      await ensureDir();
+      const doc = await this._col.findOne({ session_name: sessionKey });
+      if (!doc) throw new Error(`Session "${sessionKey}" not found in MongoDB`);
 
-      const doc = await Session.findOne({ session_name: name });
+      const buf = doc.zip_data.buffer ?? Buffer.from(doc.zip_data.value());
+      fs.writeFileSync(destPath, buf);
 
-      if (!doc) {
-        throw new Error(`No session in MongoDB for: ${name}`);
-      }
-
-      if (!isValidZip(doc.zip_data)) {
-        console.warn(`[MongoDB] extract — zip in DB is corrupted (${name}) — deleting`);
-        await Session.deleteOne({ session_name: name });
-        throw new Error(`Corrupted session deleted, fresh QR needed`);
-      }
-
-      await fsp.writeFile(zipPath, doc.zip_data);
-      console.log(`[MongoDB] Session extracted to disk: ${name}`);
-
+      console.log(`[MongoDB] Session "${sessionKey}" extracted → ${destPath} ✓`);
     } catch (err) {
       console.error('[MongoDB] extract error:', err.message);
       throw err;
     }
   }
 
-  // ── delete ────────────────────────────────────────────────────────────────────
-  async delete(options) {
-    const name    = options.session;
-    const zipPath = path.join(SESSION_DIR, `${name}.zip`);
-
+  async delete({ session: sessionKey }) {
     try {
-      this._stopAutoSave(name);
-      await Session.deleteOne({ session_name: name });
-
-      if (fs.existsSync(zipPath)) {
-        await fsp.unlink(zipPath);
-      }
-
-      console.log(`[MongoDB] Session deleted: ${name}`);
+      await this._col.deleteOne({ session_name: sessionKey });
+      console.log(`[MongoDB] Session "${sessionKey}" deleted ✓`);
     } catch (err) {
       console.error('[MongoDB] delete error:', err.message);
-    }
-  }
-
-  // ── auto-save every 30s ───────────────────────────────────────────────────────
-  _startAutoSave(name, zipPath) {
-    if (this._autoSaveTimers[name]) return; // already running
-
-    console.log(`[MongoDB] Auto-save started for ${name} (every ${UPDATE_INTERVAL_MS / 1000}s)`);
-
-    this._autoSaveTimers[name] = setInterval(async () => {
-      try {
-        if (!fs.existsSync(zipPath)) return;
-        const buf = await fsp.readFile(zipPath);
-        if (!isValidZip(buf)) return;
-
-        await Session.findOneAndUpdate(
-          { session_name: name },
-          { zip_data: buf, updated_at: new Date() },
-          { upsert: true, new: true }
-        );
-
-        console.log(`[MongoDB] Auto-save ✓ ${name} @ ${new Date().toISOString()}`);
-      } catch (err) {
-        console.warn(`[MongoDB] Auto-save failed (${name}):`, err.message);
-      }
-    }, UPDATE_INTERVAL_MS);
-  }
-
-  _stopAutoSave(name) {
-    if (this._autoSaveTimers[name]) {
-      clearInterval(this._autoSaveTimers[name]);
-      delete this._autoSaveTimers[name];
-      console.log(`[MongoDB] Auto-save stopped for ${name}`);
     }
   }
 }

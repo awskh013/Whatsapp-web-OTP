@@ -1,8 +1,9 @@
 {
   "name": "whatsapp-bot",
   "version": "3.0.0",
-  "description": "Production WhatsApp bot — Railway + MongoDB",
+  "description": "Production WhatsApp bot — Render + MongoDB",
   "main": "index.js",
+  "type": "module",
   "scripts": {
     "start": "node index.js"
   },
@@ -13,8 +14,13 @@
     "express": "^4.19.2",
     "fs-extra": "^11.2.0",
     "mongodb": "^6.7.0",
+    "mongoose": "^8.4.0",
     "qrcode": "^1.5.4",
     "unzipper": "^0.12.3",
-    "whatsapp-web.js": "^1.23.0"
+    "whatsapp-web.js": "^1.23.0",
+    "wwebjs-mongo": "^1.1.0"
+  },
+  "engines": {
+    "node": ">=18.0.0"
   }
 }

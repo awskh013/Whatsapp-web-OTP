@@ -1,10 +1,10 @@
 'use strict';
 
-const { MongoClient, Binary } = require('mongodb');
-const path = require('path');
-const fs   = require('fs');
+import { MongoClient, Binary } from 'mongodb';
+import path from 'path';
+import fs from 'fs';
 
-class MongoStore {
+export class MongoStore {
   constructor() {
     this._client = null;
     this._col    = null;
@@ -34,8 +34,7 @@ class MongoStore {
     }
   }
 
-  // ─── Store interface ────────────────────────────────────────────────────────
-
+  // ─── Check if session exists ───────────────────────────────────────────────
   async sessionExists({ session }) {
     try {
       const count = await this._col.countDocuments({ session_name: session });
@@ -48,6 +47,7 @@ class MongoStore {
     }
   }
 
+  // ─── Save zip to MongoDB ───────────────────────────────────────────────────
   async save({ session: sessionPath }) {
     const zipPath    = sessionPath + '.zip';
     const sessionKey = path.basename(sessionPath);
@@ -77,16 +77,13 @@ class MongoStore {
     }
   }
 
-  /**
-   * Called by RemoteAuth on startup when a session exists in the store.
-   * Writes the zip to destPath so RemoteAuth can unpack and restore it.
-   */
+  // ─── Extract zip from MongoDB to disk ─────────────────────────────────────
   async extract({ session: sessionKey, path: destPath }) {
     try {
       const doc = await this._col.findOne({ session_name: sessionKey });
       if (!doc) throw new Error(`Session "${sessionKey}" not found in MongoDB`);
 
-      // ✅ Safe buffer extraction — works across all MongoDB driver versions
+      // Safe buffer extraction — works across all MongoDB driver versions
       const raw = doc.zip_data;
       let buf;
       if (Buffer.isBuffer(raw)) {
@@ -99,7 +96,7 @@ class MongoStore {
         buf = Buffer.from(raw);
       }
 
-      // ✅ Ensure the destination directory exists (important on a fresh deploy)
+      // Ensure destination directory exists (critical on fresh Render deploy)
       const destDir = path.dirname(destPath);
       if (!fs.existsSync(destDir)) {
         fs.mkdirSync(destDir, { recursive: true });
@@ -114,6 +111,7 @@ class MongoStore {
     }
   }
 
+  // ─── Delete session from MongoDB ──────────────────────────────────────────
   async delete({ session: sessionKey }) {
     try {
       await this._col.deleteOne({ session_name: sessionKey });
@@ -123,5 +121,3 @@ class MongoStore {
     }
   }
 }
-
-module.exports = { MongoStore };

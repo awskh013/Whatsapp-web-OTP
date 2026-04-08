@@ -2,7 +2,7 @@
 
 const { MongoClient, Binary } = require('mongodb');
 const path = require('path');
-const fs = require('fs');
+const fs   = require('fs');
 
 class MongoStore {
   constructor() {
@@ -10,81 +10,44 @@ class MongoStore {
     this._col    = null;
   }
 
-  /** Initialize MongoDB connection */
   async init() {
     const uri = process.env.MONGODB_URI;
     if (!uri) throw new Error('MONGODB_URI environment variable is not set');
 
     this._client = new MongoClient(uri, {
-      serverSelectionTimeoutMS: 10000,
-      connectTimeoutMS: 10000,
+      serverSelectionTimeoutMS: 10_000,
+      connectTimeoutMS:         10_000,
     });
 
     await this._client.connect();
-
-    const db = this._client.db('whatsapp_bot');
+    const db  = this._client.db('whatsapp_bot');
     this._col = db.collection('sessions');
 
     await this._col.createIndex({ session_name: 1 }, { unique: true });
-
     console.log('[MongoDB] Connected — collection: sessions ✓');
   }
 
-  // ─────────────────────────────────────────────────────────────
-  // 🔹 Helper: Restore session on server restart
-  // ─────────────────────────────────────────────────────────────
-  async restoreIfExists(sessionName, sessionPath) {
-    try {
-      const exists = await this.sessionExists({ session: sessionName });
-
-      if (!exists) {
-        console.log(`[MongoDB] No stored session for "${sessionName}"`);
-        return false;
-      }
-
-      const zipPath = sessionPath + '.zip';
-
-      // Ensure directory exists
-      const dir = path.dirname(zipPath);
-      if (!fs.existsSync(dir)) {
-        fs.mkdirSync(dir, { recursive: true });
-      }
-
-      console.log(`[MongoDB] Restoring session "${sessionName}"...`);
-
-      await this.extract({
-        session: sessionName,
-        path: zipPath,
-      });
-
-      console.log(`[MongoDB] Session "${sessionName}" restored ✓`);
-      return true;
-
-    } catch (err) {
-      console.error('[MongoDB] restoreIfExists error:', err.message);
-      return false;
+  async close() {
+    if (this._client) {
+      await this._client.close();
+      console.log('[MongoDB] Connection closed ✓');
     }
   }
 
-  // ─────────────────────────────────────────────────────────────
-  // 🔹 Store interface (Required by RemoteAuth)
-  // ─────────────────────────────────────────────────────────────
+  // ─── Store interface ────────────────────────────────────────────────────────
 
   async sessionExists({ session }) {
     try {
-      const count = await this._col.countDocuments({
-        session_name: session,
-      });
-      return count > 0;
+      const count = await this._col.countDocuments({ session_name: session });
+      const exists = count > 0;
+      console.log(`[MongoDB] sessionExists("${session}") → ${exists}`);
+      return exists;
     } catch (err) {
       console.error('[MongoDB] sessionExists error:', err.message);
       return false;
     }
   }
 
-  /**
-   * Save session zip into MongoDB
-   */
   async save({ session: sessionPath }) {
     const zipPath    = sessionPath + '.zip';
     const sessionKey = path.basename(sessionPath);
@@ -93,7 +56,6 @@ class MongoStore {
       if (!fs.existsSync(zipPath)) {
         throw new Error(`Zip not found at: ${zipPath}`);
       }
-
       const data = fs.readFileSync(zipPath);
 
       await this._col.updateOne(
@@ -101,17 +63,14 @@ class MongoStore {
         {
           $set: {
             session_name: sessionKey,
-            zip_data: new Binary(data),
-            updated_at: new Date(),
+            zip_data:     new Binary(data),
+            updated_at:   new Date(),
           },
         },
         { upsert: true }
       );
 
-      console.log(
-        `[MongoDB] Session "${sessionKey}" saved ✓ (${data.length} bytes)`
-      );
-
+      console.log(`[MongoDB] Session "${sessionKey}" saved ✓ (${data.length} bytes)`);
     } catch (err) {
       console.error('[MongoDB] save error:', err.message);
       throw err;
@@ -119,59 +78,48 @@ class MongoStore {
   }
 
   /**
-   * Extract session zip from MongoDB to filesystem
+   * Called by RemoteAuth on startup when a session exists in the store.
+   * Writes the zip to destPath so RemoteAuth can unpack and restore it.
    */
   async extract({ session: sessionKey, path: destPath }) {
     try {
-      const doc = await this._col.findOne({
-        session_name: sessionKey,
-      });
+      const doc = await this._col.findOne({ session_name: sessionKey });
+      if (!doc) throw new Error(`Session "${sessionKey}" not found in MongoDB`);
 
-      if (!doc) {
-        throw new Error(`Session "${sessionKey}" not found in MongoDB`);
+      // ✅ Safe buffer extraction — works across all MongoDB driver versions
+      const raw = doc.zip_data;
+      let buf;
+      if (Buffer.isBuffer(raw)) {
+        buf = raw;
+      } else if (raw && Buffer.isBuffer(raw.buffer)) {
+        buf = raw.buffer;
+      } else if (raw && typeof raw.value === 'function') {
+        buf = Buffer.from(raw.value(), 'binary');
+      } else {
+        buf = Buffer.from(raw);
       }
 
-      const buf =
-        doc.zip_data?.buffer ??
-        Buffer.from(doc.zip_data?.value?.() || []);
-
-      if (!buf || buf.length === 0) {
-        throw new Error('Stored zip is empty or invalid');
+      // ✅ Ensure the destination directory exists (important on a fresh deploy)
+      const destDir = path.dirname(destPath);
+      if (!fs.existsSync(destDir)) {
+        fs.mkdirSync(destDir, { recursive: true });
+        console.log(`[MongoDB] Created directory: ${destDir}`);
       }
 
       fs.writeFileSync(destPath, buf);
-
-      console.log(
-        `[MongoDB] Session "${sessionKey}" extracted → ${destPath} ✓`
-      );
-
+      console.log(`[MongoDB] Session "${sessionKey}" extracted → ${destPath} ✓ (${buf.length} bytes)`);
     } catch (err) {
       console.error('[MongoDB] extract error:', err.message);
       throw err;
     }
   }
 
-  /**
-   * Delete session from MongoDB
-   */
   async delete({ session: sessionKey }) {
     try {
-      await this._col.deleteOne({
-        session_name: sessionKey,
-      });
-
+      await this._col.deleteOne({ session_name: sessionKey });
       console.log(`[MongoDB] Session "${sessionKey}" deleted ✓`);
-
     } catch (err) {
       console.error('[MongoDB] delete error:', err.message);
-    }
-  }
-
-  /** Optional: Close DB connection cleanly */
-  async close() {
-    if (this._client) {
-      await this._client.close();
-      console.log('[MongoDB] Connection closed');
     }
   }
 }

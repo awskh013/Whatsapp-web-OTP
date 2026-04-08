@@ -1,10 +1,11 @@
 import express from 'express';
 import pkg from 'whatsapp-web.js';
 const { Client, RemoteAuth } = pkg;
-import { MongoStore } from './store.js';
+import { MongoClient, Binary } from 'mongodb';
 import dotenv from 'dotenv';
 import qr2 from 'qrcode';
 import fs from 'fs';
+import path from 'path';
 import { spawnSync } from 'child_process';
 
 dotenv.config();
@@ -14,13 +15,13 @@ app.use(express.json());
 
 const PORT                  = process.env.PORT || 3000;
 const MONGODB_URI           = process.env.MONGODB_URI;
-const CLIENT_ID             = 'primary'; // session key in DB = "RemoteAuth-primary"
+const CLIENT_ID             = 'primary';
 const WHATSAPP_API_PASSWORD = process.env.WHATSAPP_API_PASSWORD || '';
 const FORCE_PUPPETEER       = String(process.env.FORCE_PUPPETEER || 'false').toLowerCase() === 'true';
 const AUTH_DIR              = '.wwebjs_auth';
 
 if (!MONGODB_URI) {
-  console.error('❌ MONGODB_URI is missing — set environment variable and redeploy.');
+  console.error('❌ MONGODB_URI is missing');
   process.exit(1);
 }
 
@@ -30,16 +31,96 @@ let clientReady  = false;
 let initializing = false;
 let lastQrLogAt  = 0;
 const QR_LOG_COOLDOWN_MS = 10_000;
-
 let client = null;
 let store  = null;
 
-// ─── Helpers ──────────────────────────────────────────────────────────────────
+// ─── MongoStore (inline) ──────────────────────────────────────────────────────
+class MongoStore {
+  constructor() {
+    this._client = null;
+    this._col    = null;
+  }
 
-/**
- * Ensure local auth dir exists so RemoteAuth's unlink() after save never
- * throws ENOENT on a fresh Render deploy.
- */
+  async init() {
+    this._client = new MongoClient(MONGODB_URI, {
+      serverSelectionTimeoutMS: 10_000,
+      connectTimeoutMS:         10_000,
+    });
+    await this._client.connect();
+    const db  = this._client.db('whatsapp_bot');
+    this._col = db.collection('sessions');
+    await this._col.createIndex({ session_name: 1 }, { unique: true });
+    console.log('[MongoDB] Connected — collection: sessions ✓');
+  }
+
+  async close() {
+    if (this._client) await this._client.close();
+  }
+
+  async sessionExists({ session }) {
+    try {
+      const count  = await this._col.countDocuments({ session_name: session });
+      const exists = count > 0;
+      console.log(`[MongoDB] sessionExists("${session}") → ${exists}`);
+      return exists;
+    } catch (err) {
+      console.error('[MongoDB] sessionExists error:', err.message);
+      return false;
+    }
+  }
+
+  async save({ session: sessionPath }) {
+    const zipPath    = sessionPath + '.zip';
+    const sessionKey = path.basename(sessionPath);
+    try {
+      if (!fs.existsSync(zipPath)) throw new Error(`Zip not found at: ${zipPath}`);
+      const data = fs.readFileSync(zipPath);
+      await this._col.updateOne(
+        { session_name: sessionKey },
+        { $set: { session_name: sessionKey, zip_data: new Binary(data), updated_at: new Date() } },
+        { upsert: true }
+      );
+      console.log(`[MongoDB] Session "${sessionKey}" saved ✓ (${data.length} bytes)`);
+    } catch (err) {
+      console.error('[MongoDB] save error:', err.message);
+      throw err;
+    }
+  }
+
+  async extract({ session: sessionKey, path: destPath }) {
+    try {
+      const doc = await this._col.findOne({ session_name: sessionKey });
+      if (!doc) throw new Error(`Session "${sessionKey}" not found in MongoDB`);
+
+      const raw = doc.zip_data;
+      let buf;
+      if (Buffer.isBuffer(raw))                  buf = raw;
+      else if (raw && Buffer.isBuffer(raw.buffer)) buf = raw.buffer;
+      else if (raw && typeof raw.value === 'function') buf = Buffer.from(raw.value(), 'binary');
+      else buf = Buffer.from(raw);
+
+      const destDir = path.dirname(destPath);
+      if (!fs.existsSync(destDir)) fs.mkdirSync(destDir, { recursive: true });
+
+      fs.writeFileSync(destPath, buf);
+      console.log(`[MongoDB] Session "${sessionKey}" extracted → ${destPath} ✓ (${buf.length} bytes)`);
+    } catch (err) {
+      console.error('[MongoDB] extract error:', err.message);
+      throw err;
+    }
+  }
+
+  async delete({ session: sessionKey }) {
+    try {
+      await this._col.deleteOne({ session_name: sessionKey });
+      console.log(`[MongoDB] Session "${sessionKey}" deleted ✓`);
+    } catch (err) {
+      console.error('[MongoDB] delete error:', err.message);
+    }
+  }
+}
+
+// ─── Helpers ──────────────────────────────────────────────────────────────────
 function ensureAuthDir() {
   if (!fs.existsSync(AUTH_DIR)) {
     fs.mkdirSync(AUTH_DIR, { recursive: true });
@@ -53,7 +134,6 @@ function detectChromium() {
     '/usr/bin/chromium',
     '/usr/bin/chromium-browser',
   ].filter(Boolean);
-
   for (const p of candidates) {
     try {
       if (fs.existsSync(p)) {
@@ -64,7 +144,6 @@ function detectChromium() {
       }
     } catch {}
   }
-  return undefined;
 }
 
 function buildPuppeteerOptions() {
@@ -86,26 +165,7 @@ function buildPuppeteerOptions() {
   return opts;
 }
 
-// ─── Session check ────────────────────────────────────────────────────────────
-
-/**
- * Directly queries the sessions collection to see if a saved session exists.
- * The key stored by store.js is always "RemoteAuth-<clientId>".
- */
-async function sessionExistsInMongo() {
-  try {
-    const sessionKey = `RemoteAuth-${CLIENT_ID}`;
-    const exists     = await store.sessionExists({ session: sessionKey });
-    console.log(`🔍 Session "${sessionKey}" in MongoDB: ${exists ? '✅ FOUND' : '❌ NOT FOUND'}`);
-    return exists;
-  } catch (err) {
-    console.warn('⚠️  sessionExistsInMongo error:', err.message);
-    return false;
-  }
-}
-
 // ─── WhatsApp client ──────────────────────────────────────────────────────────
-
 async function initWhatsAppClient() {
   if (initializing) return;
   initializing = true;
@@ -135,10 +195,7 @@ async function initWhatsAppClient() {
   });
 
   client.on('authenticated', () => console.log('✅ WhatsApp authenticated'));
-
-  client.on('remote_session_saved', () =>
-    console.log('💾 Remote session saved to MongoDB ✓')
-  );
+  client.on('remote_session_saved', () => console.log('💾 Remote session saved to MongoDB ✓'));
 
   client.on('ready', () => {
     clientReady  = true;
@@ -172,44 +229,30 @@ async function initWhatsAppClient() {
 }
 
 // ─── BOOT ─────────────────────────────────────────────────────────────────────
-/**
- * Boot sequence:
- *  1. Init MongoStore (connects to MongoDB via MONGODB_URI)
- *  2. Check if "RemoteAuth-primary" session exists
- *     → YES: RemoteAuth will restore it automatically — no QR
- *     → NO:  RemoteAuth will generate a QR for first login
- *  3. Initialize WhatsApp client
- */
 async function boot() {
   try {
-    // Step 1 — connect to MongoDB via custom store
     store = new MongoStore();
     await store.init();
 
-    // Step 2 — check for existing session
-    const hasSession = await sessionExistsInMongo();
+    const sessionKey = `RemoteAuth-${CLIENT_ID}`;
+    const hasSession = await store.sessionExists({ session: sessionKey });
 
     if (hasSession) {
-      console.log('🔄 Session found — restoring from MongoDB, no QR needed');
+      console.log('🔄 Session found in MongoDB — restoring automatically, no QR needed');
     } else {
       console.log('🆕 No session found — QR scan required for first login');
     }
 
-    // Step 3 — init client (RemoteAuth handles restore or QR internally)
     await initWhatsAppClient();
-
   } catch (err) {
     console.error('❌ boot() failed:', err.message);
-    console.log('♻️  Retrying boot in 20s...');
+    console.log('♻️  Retrying in 20s...');
     setTimeout(() => boot(), 20_000);
   }
 }
 
-// ─── Express routes ───────────────────────────────────────────────────────────
-
-app.get('/', (_req, res) =>
-  res.send('✅ WhatsApp bot running. Use /whatsapp/login and /whatsapp/send')
-);
+// ─── Routes ───────────────────────────────────────────────────────────────────
+app.get('/', (_req, res) => res.send('✅ WhatsApp bot running'));
 
 app.get('/debug/session', async (_req, res) => {
   try {
@@ -260,7 +303,6 @@ app.listen(PORT, '0.0.0.0', () => {
   setTimeout(() => boot(), 3_000);
 });
 
-// ─── Graceful shutdown ────────────────────────────────────────────────────────
 process.on('SIGTERM', async () => {
   console.log('🛑 SIGTERM — shutting down gracefully');
   try {

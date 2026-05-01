@@ -4,7 +4,7 @@ import express from "express";
 import mongoose from "mongoose";
 import pkg from "whatsapp-web.js";
 const { Client, RemoteAuth } = pkg;
-import { MongoStore } from "wwebjs-mongo";
+import { MongoStore } from "./src/store.js";
 import dotenv from "dotenv";
 import qr2 from "qrcode";
 import fs from "fs";

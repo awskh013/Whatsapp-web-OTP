@@ -41,7 +41,7 @@ let store  = null;
 const messageQueue   = [];
 let   queueRunning   = false;
 const QUEUE_INTERVAL = 5_000;   // process every 5 seconds
-const SEND_DELAY_MS  = 1_000;   // 1s gap between sends in the same batch
+const SEND_DELAY_MS  = 5_000;   // 1s gap between sends in the same batch
 
 // ─── MongoStore ───────────────────────────────────────────────────────────────
 // ─── MongoStore (with GridFS) ─────────────────────────────────────────────────

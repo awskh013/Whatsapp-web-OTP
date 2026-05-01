@@ -56,6 +56,8 @@ COPY package.json ./
 # Install all dependencies (including optional ones needed by RemoteAuth)
 RUN npm install --omit=dev
 
+RUN npm install archiver
+
 # Copy source
 COPY . .
 

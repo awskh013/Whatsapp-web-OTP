@@ -49,49 +49,28 @@ export class MongoStore {
 
   // ─── Save zip to MongoDB ───────────────────────────────────────────────────
  // src/store.js
-async save({ session: sessionPath }) {
-    const sessionKey = path.basename(sessionPath);
+async save({ session: sessionName }) {
+    // RemoteAuth always writes the zip to dataPath/sessionName.zip
+    const zipPath = path.join('.wwebjs_auth', `${sessionName}.zip`);
 
-    // 🔍 Critical: log what RemoteAuth is actually passing
-    console.log(`[MongoDB] save() called — sessionPath="${sessionPath}" | sessionKey="${sessionKey}"`);
+    console.log(`[MongoDB] save() called — looking for zip at: ${zipPath}`);
 
-    const pathsToTry = [
-        `${sessionPath}.zip`,
-        path.join('.wwebjs_auth', `${sessionKey}.zip`),
-        path.join('.wwebjs_auth', `${sessionPath}.zip`),
-    ];
-
-    // Fallback: scan .wwebjs_auth for ANY zip file
-    const authDir = '.wwebjs_auth';
-    if (fs.existsSync(authDir)) {
-        const zips = fs.readdirSync(authDir)
-            .filter(f => f.endsWith('.zip'))
-            .map(f => path.join(authDir, f));
-        pathsToTry.push(...zips);
-        console.log(`[MongoDB] Zips found in ${authDir}:`, zips.length ? zips : '(none)');
-    } else {
-        console.warn(`[MongoDB] ⚠️ .wwebjs_auth directory does not exist`);
+    if (!fs.existsSync(zipPath)) {
+        // Last-resort: scan the whole .wwebjs_auth dir so we can see what's actually there
+        const found = fs.existsSync('.wwebjs_auth')
+            ? fs.readdirSync('.wwebjs_auth')
+            : [];
+        console.error(`[MongoDB] ❌ Zip not found. .wwebjs_auth contents: [${found.join(', ')}]`);
+        throw new Error(`Zip not found at: ${zipPath}`);
     }
 
-    console.log(`[MongoDB] Checking paths:`, pathsToTry);
-    const finalPath = pathsToTry.find(p => fs.existsSync(p));
-
-    if (!finalPath) {
-        console.error(`❌ [MongoDB] Zip not found. Checked: ${pathsToTry.join(', ')}`);
-        throw new Error(`Session zip not found for "${sessionKey}"`); // ← throw, don't silently return
-    }
-
-    const data = fs.readFileSync(finalPath);
+    const data = fs.readFileSync(zipPath);
     await this._col.updateOne(
-        { session_name: sessionKey },
-        { $set: {
-            session_name: sessionKey,
-            zip_data: new Binary(data),
-            updated_at: new Date()
-        }},
+        { session_name: sessionName },
+        { $set: { session_name: sessionName, zip_data: new Binary(data), updated_at: new Date() } },
         { upsert: true }
     );
-    console.log(`✅ [MongoDB] Session "${sessionKey}" saved from: ${finalPath} (${data.length} bytes)`);
+    console.log(`✅ [MongoDB] Saved "${sessionName}" (${data.length} bytes) from ${zipPath}`);
 }
   // ─── Extract zip from MongoDB to disk ─────────────────────────────────────
   async extract({ session: sessionKey, path: destPath }) {

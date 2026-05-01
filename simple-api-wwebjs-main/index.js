@@ -1,6 +1,15 @@
+import dotenv from 'dotenv';
+import express from 'express';
+import pkg from 'whatsapp-web.js';
+const { Client, RemoteAuth } = pkg;
+import { MongoClient, Binary } from 'mongodb';
 import archiver from 'archiver';
 import { Extract } from 'unzipper';
 import { Readable } from 'stream';
+import qr2 from 'qrcode';
+import fs from 'fs';
+import path from 'path';
+import { spawnSync } from 'child_process';
 
 dotenv.config();
 

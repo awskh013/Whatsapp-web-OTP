@@ -129,7 +129,8 @@ async function initWhatsAppClient() {
 
   detectChromium();
 
-  store = new MongoStore({ mongoose, collectionName: "sessions" });
+  store = new MongoStore();
+  await store.init();
 
   const puppeteerOptions = {
     headless: true,
@@ -146,7 +147,7 @@ async function initWhatsAppClient() {
   else if (FORCE_PUPPETEER) puppeteerOptions.executablePath = "/usr/bin/chromium";
 
   client = new Client({
-    authStrategy: new RemoteAuth({ clientId: CLIENT_ID, store, backupSyncIntervalMs: 300000 }),
+    authStrategy: new RemoteAuth({ clientId: CLIENT_ID, store : store, backupSyncIntervalMs: 300000 }),
     puppeteer: puppeteerOptions,
     takeoverOnConflict: true,
     restartOnAuthFail: true,

@@ -51,31 +51,47 @@ export class MongoStore {
  // src/store.js
 async save({ session: sessionPath }) {
     const sessionKey = path.basename(sessionPath);
-    
-    // Logic to find the zip whether it's in the root or the auth folder
+
+    // 🔍 Critical: log what RemoteAuth is actually passing
+    console.log(`[MongoDB] save() called — sessionPath="${sessionPath}" | sessionKey="${sessionKey}"`);
+
     const pathsToTry = [
-        `${sessionPath}.zip`, 
-        path.join('.wwebjs_auth', `${sessionKey}.zip`)
+        `${sessionPath}.zip`,
+        path.join('.wwebjs_auth', `${sessionKey}.zip`),
+        path.join('.wwebjs_auth', `${sessionPath}.zip`),
     ];
 
+    // Fallback: scan .wwebjs_auth for ANY zip file
+    const authDir = '.wwebjs_auth';
+    if (fs.existsSync(authDir)) {
+        const zips = fs.readdirSync(authDir)
+            .filter(f => f.endsWith('.zip'))
+            .map(f => path.join(authDir, f));
+        pathsToTry.push(...zips);
+        console.log(`[MongoDB] Zips found in ${authDir}:`, zips.length ? zips : '(none)');
+    } else {
+        console.warn(`[MongoDB] ⚠️ .wwebjs_auth directory does not exist`);
+    }
+
+    console.log(`[MongoDB] Checking paths:`, pathsToTry);
     const finalPath = pathsToTry.find(p => fs.existsSync(p));
 
     if (!finalPath) {
-        console.error(`❌ Still can't find zip. Checked: ${pathsToTry}`);
-        return; // Prevent crash
+        console.error(`❌ [MongoDB] Zip not found. Checked: ${pathsToTry.join(', ')}`);
+        throw new Error(`Session zip not found for "${sessionKey}"`); // ← throw, don't silently return
     }
 
     const data = fs.readFileSync(finalPath);
     await this._col.updateOne(
         { session_name: sessionKey },
-        { $set: { 
-            session_name: sessionKey, 
-            zip_data: new Binary(data), 
-            updated_at: new Date() 
+        { $set: {
+            session_name: sessionKey,
+            zip_data: new Binary(data),
+            updated_at: new Date()
         }},
         { upsert: true }
     );
-    console.log(`✅ [MongoDB] Session saved from: ${finalPath}`);
+    console.log(`✅ [MongoDB] Session "${sessionKey}" saved from: ${finalPath} (${data.length} bytes)`);
 }
   // ─── Extract zip from MongoDB to disk ─────────────────────────────────────
   async extract({ session: sessionKey, path: destPath }) {

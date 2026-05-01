@@ -169,9 +169,11 @@ async function initWhatsAppClient() {
   });
 
   client.on("remote_session_saved", async () => {
-    console.log("💾 Remote session saved to MongoDB");
+    console.log("💾 Remote session trigger received, waiting 2s for file sync...");
+    await new Promise(r => setTimeout(r, 2000)); 
+    console.log("💾 Proceeding with backup...");
     await backupRemoteAuthCollections();
-  });
+});
 
   client.on("ready", () => {
     clientReady = true;

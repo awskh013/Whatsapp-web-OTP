@@ -17,7 +17,7 @@ app.use(express.json());
 
 const PORT = process.env.PORT || 3000;
 const MONGODB_URI = process.env.MONGODB_URI;
-const CLIENT_ID = "render-stable-client";
+const CLIENT_ID = "primary";
 const WHATSAPP_API_PASSWORD = process.env.WHATSAPP_API_PASSWORD || "";
 const FORCE_PUPPETEER = String(process.env.FORCE_PUPPETEER || "false").toLowerCase() === "true";
 

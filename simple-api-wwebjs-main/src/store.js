@@ -48,28 +48,34 @@ export class MongoStore {
   }
 
   // ─── Save zip to MongoDB ───────────────────────────────────────────────────
- async save({ session: sessionPath }) {
-  const sessionKey = path.basename(sessionPath);
-  const possiblePaths = [
-    `${sessionPath}.zip`,
-    path.join('.wwebjs_auth', `${sessionKey}.zip`),
-    path.join(process.cwd(), '.wwebjs_auth', `${sessionKey}.zip`)
-  ];
+ // src/store.js
+async save({ session: sessionPath }) {
+    const sessionKey = path.basename(sessionPath);
+    
+    // Logic to find the zip whether it's in the root or the auth folder
+    const pathsToTry = [
+        `${sessionPath}.zip`, 
+        path.join('.wwebjs_auth', `${sessionKey}.zip`)
+    ];
 
-  const finalPath = possiblePaths.find(p => fs.existsSync(p));
+    const finalPath = pathsToTry.find(p => fs.existsSync(p));
 
-  if (!finalPath) {
-    console.error(`❌ Save failed: Zip not found. Checked: ${possiblePaths}`);
-    return;
-  }
+    if (!finalPath) {
+        console.error(`❌ Still can't find zip. Checked: ${pathsToTry}`);
+        return; // Prevent crash
+    }
 
-  const data = fs.readFileSync(finalPath);
-  await this._col.updateOne(
-    { session_name: sessionKey },
-    { $set: { session_name: sessionKey, zip_data: new Binary(data), updated_at: new Date() } },
-    { upsert: true }
-  );
-  console.log(`✅ [MongoDB] Saved ${sessionKey} (${data.length} bytes)`);
+    const data = fs.readFileSync(finalPath);
+    await this._col.updateOne(
+        { session_name: sessionKey },
+        { $set: { 
+            session_name: sessionKey, 
+            zip_data: new Binary(data), 
+            updated_at: new Date() 
+        }},
+        { upsert: true }
+    );
+    console.log(`✅ [MongoDB] Session saved from: ${finalPath}`);
 }
   // ─── Extract zip from MongoDB to disk ─────────────────────────────────────
   async extract({ session: sessionKey, path: destPath }) {

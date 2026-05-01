@@ -36,36 +36,69 @@ const QR_LOG_COOLDOWN_MS = 10_000;
 // ✅ Queue
 const messageQueue = [];
 let queueRunning = false;
+let lastQueueActivity = Date.now(); // ✅ Watchdog tracker
 
 async function processQueue() {
   if (queueRunning || messageQueue.length === 0) return;
   queueRunning = true;
+  lastQueueActivity = Date.now(); // ✅ سجّل وقت البداية
 
-  while (messageQueue.length > 0) {
-    // ✅ لو الكلاينت مش جاهز، انتظر بدل ما تضيع الرسالة
-    if (!clientReady) {
-      console.warn("[Queue] Client not ready — waiting 60s...");
-      await wait(60000);
-      continue;
+  try {
+    while (messageQueue.length > 0) {
+      if (!clientReady) {
+        console.warn("[Queue] Client not ready — waiting 10s...");
+        lastQueueActivity = Date.now(); // ✅ تحديث حتى وهي تنتظر
+        await wait(10000);
+        continue;
+      }
+
+      const item = messageQueue[0];
+
+      try {
+        await client.sendMessage(`${item.phone}@c.us`, item.message, { sendSeen: false });
+        messageQueue.shift();
+        lastQueueActivity = Date.now(); // ✅ تحديث بعد كل إرسال
+        console.log(`[Queue] ✅ Sent to ${item.phone} — ${messageQueue.length} remaining`);
+        item.resolve({ ok: true });
+      } catch (err) {
+        messageQueue.shift();
+        lastQueueActivity = Date.now();
+        console.error(`[Queue] ❌ Failed to send to ${item.phone}:`, err.message);
+        item.reject(err);
+      }
+
+      if (messageQueue.length > 0) {
+        console.log(`[Queue] ⏳ Waiting 60s before next message...`);
+        lastQueueActivity = Date.now(); // ✅ تحديث قبل الانتظار
+        await wait(60000);
+      }
     }
+  } catch (err) {
+    console.error("[Queue] 💥 Unexpected queue error:", err.message);
+  } finally {
+    queueRunning = false; // ✅ دايماً يتحرر حتى لو صار أي شي
+  }
+}
 
-    const { phone, message, resolve, reject } = messageQueue.shift();
-
-    try {
-      await client.sendMessage(`${phone}@c.us`, message, { sendSeen: false });
-      console.log(`[Queue] ✅ Sent to ${phone} — ${messageQueue.length} remaining`);
-      resolve({ ok: true });
-    } catch (err) {
-      console.error(`[Queue] ❌ Failed to send to ${phone}:`, err.message);
-      reject(err);
-    }
-
-    // ✅ 5 ثواني بين كل رسالة ورسالة
-    if (messageQueue.length > 0) await wait(60000);
+// ✅ Watchdog — يفحص القائمة كل دقيقة ويعيد تشغيلها لو تجمدت
+setInterval(() => {
+  // حالة 1: في رسائل بالقائمة بس processQueue مش شغالة
+  if (messageQueue.length > 0 && !queueRunning) {
+    console.warn("[Watchdog] ⚠️ Queue has items but not running — restarting...");
+    processQueue();
+    return;
   }
 
-  queueRunning = false;
-}
+  // حالة 2: queueRunning = true بس ما في نشاط من 3 دقايق = مجمدة
+  if (queueRunning && messageQueue.length > 0) {
+    const frozenFor = Date.now() - lastQueueActivity;
+    if (frozenFor > 3 * 60 * 1000) {
+      console.warn(`[Watchdog] ⚠️ Queue frozen for ${Math.round(frozenFor / 1000)}s — force restarting...`);
+      queueRunning = false;
+      processQueue();
+    }
+  }
+}, 60000);
 
 function queueMessage(phone, message) {
   return new Promise((resolve, reject) => {
@@ -217,8 +250,7 @@ async function initWhatsAppClient() {
     clientReady = true;
     qrValue = null;
     console.log("🤖 WhatsApp client READY");
-    // ✅ لو كانت في رسائل منتظرة قبل ما يكون جاهز، شغّلها هلق
-    processQueue();
+    processQueue(); // ✅ شغّل القائمة لو كان فيها رسائل منتظرة
   });
 
   client.on("auth_failure", (msg) => {
@@ -272,12 +304,34 @@ app.get("/whatsapp/login", async (req, res) => {
   });
 });
 
-// ✅ أضفنا queueSize للستاتوس
 app.get("/whatsapp/status", (req, res) => {
-  res.json({ ok: true, clientReady, hasQR: !!qrValue, queueSize: messageQueue.length });
+  res.json({
+    ok: true,
+    clientReady,
+    hasQR: !!qrValue,
+    queueSize: messageQueue.length,
+    queueRunning, // ✅
+    lastQueueActivity: new Date(lastQueueActivity).toISOString(), // ✅
+  });
 });
 
-// ✅ /whatsapp/send أصبح يحط الرسالة بالقائمة بدل الإرسال المباشر
+// ✅ تشوف الرسائل المنتظرة بالقائمة
+app.get("/whatsapp/queue", (req, res) => {
+  res.json({
+    queueSize: messageQueue.length,
+    queueRunning,
+    frozenForSeconds: Math.round((Date.now() - lastQueueActivity) / 1000),
+    items: messageQueue.map(i => ({ phone: i.phone })),
+  });
+});
+
+// ✅ تعيد تشغيل القائمة يدوياً لو احتجت
+app.post("/whatsapp/queue/restart", (req, res) => {
+  queueRunning = false;
+  processQueue();
+  res.json({ ok: true, message: "Queue restarted", queueSize: messageQueue.length });
+});
+
 app.post("/whatsapp/send", async (req, res) => {
   try {
     if (WHATSAPP_API_PASSWORD && req.headers["x-password"] !== WHATSAPP_API_PASSWORD) {
@@ -286,7 +340,6 @@ app.post("/whatsapp/send", async (req, res) => {
     const { phone, message } = req.body;
     if (!phone || !message) return res.status(400).json({ ok: false, error: "phone & message required" });
 
-    // ✅ ما نرفض الطلب لو الكلاينت مش جاهز — نحطها بالقائمة وتنبعث لما يصحى
     const position = messageQueue.length + 1;
     queueMessage(phone, message).catch(err =>
       console.error(`[Queue] background error for ${phone}:`, err.message)

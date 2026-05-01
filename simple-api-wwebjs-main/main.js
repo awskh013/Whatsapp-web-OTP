@@ -44,8 +44,8 @@ async function processQueue() {
   while (messageQueue.length > 0) {
     // ✅ لو الكلاينت مش جاهز، انتظر بدل ما تضيع الرسالة
     if (!clientReady) {
-      console.warn("[Queue] Client not ready — waiting 5s...");
-      await wait(5000);
+      console.warn("[Queue] Client not ready — waiting 60s...");
+      await wait(60000);
       continue;
     }
 
@@ -61,7 +61,7 @@ async function processQueue() {
     }
 
     // ✅ 5 ثواني بين كل رسالة ورسالة
-    if (messageQueue.length > 0) await wait(5000);
+    if (messageQueue.length > 0) await wait(60000);
   }
 
   queueRunning = false;

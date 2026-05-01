@@ -1,7 +1,7 @@
 import dotenv from 'dotenv';
 import express from 'express';
 import pkg from 'whatsapp-web.js';
-const { Client, RemoteAuth } = pkg;
+const { Client, RemoteAuth } = pkg; 
 import { MongoClient } from 'mongodb';
 import archiver from 'archiver';
 import qr2 from 'qrcode';

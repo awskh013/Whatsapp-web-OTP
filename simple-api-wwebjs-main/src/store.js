@@ -50,18 +50,33 @@ export class MongoStore {
   // ─── Save zip to MongoDB ───────────────────────────────────────────────────
  // src/store.js
 async save({ session: sessionName }) {
-    // RemoteAuth always writes the zip to dataPath/sessionName.zip
-    const zipPath = path.join('.wwebjs_auth', `${sessionName}.zip`);
+    console.log(`[MongoDB] save() called with session="${sessionName}"`);
+    console.log(`[MongoDB] CWD: ${process.cwd()}`);
 
-    console.log(`[MongoDB] save() called — looking for zip at: ${zipPath}`);
+    // Scan everywhere RemoteAuth might drop the zip
+    const dirsToScan = ['.', '.wwebjs_auth', '/app'];
+    for (const dir of dirsToScan) {
+        try {
+            if (fs.existsSync(dir)) {
+                const files = fs.readdirSync(dir).filter(f => f.endsWith('.zip'));
+                console.log(`[MongoDB] Zips in "${dir}": [${files.join(', ') || 'none'}]`);
+            }
+        } catch {}
+    }
 
-    if (!fs.existsSync(zipPath)) {
-        // Last-resort: scan the whole .wwebjs_auth dir so we can see what's actually there
-        const found = fs.existsSync('.wwebjs_auth')
-            ? fs.readdirSync('.wwebjs_auth')
-            : [];
-        console.error(`[MongoDB] ❌ Zip not found. .wwebjs_auth contents: [${found.join(', ')}]`);
-        throw new Error(`Zip not found at: ${zipPath}`);
+    // Try every possible location
+    const zipCandidates = [
+        `${sessionName}.zip`,
+        path.join('.wwebjs_auth', `${sessionName}.zip`),
+        path.join('/app', `${sessionName}.zip`),
+        path.join(process.cwd(), `${sessionName}.zip`),
+    ];
+
+    const zipPath = zipCandidates.find(p => fs.existsSync(p));
+
+    if (!zipPath) {
+        console.error(`[MongoDB] ❌ Zip not found in any of: ${zipCandidates.join(', ')}`);
+        throw new Error(`Zip not found for session: ${sessionName}`);
     }
 
     const data = fs.readFileSync(zipPath);

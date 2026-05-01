@@ -170,9 +170,8 @@ async function initWhatsAppClient() {
   });
 
   client.on("remote_session_saved", async () => {
-    console.log("💾 Remote session trigger received, waiting 2s for file sync...");
-    await new Promise(r => setTimeout(r, 2000)); 
-    console.log("💾 Proceeding with backup...");
+    console.log("💾 [EVENT] remote_session_saved fired"); // confirm event is reached
+    await new Promise(r => setTimeout(r, 2000));
     await backupRemoteAuthCollections();
 });
 

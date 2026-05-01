@@ -1,7 +1,7 @@
 import dotenv from 'dotenv';
 import express from 'express';
 import pkg from 'whatsapp-web.js';
-const { Client, RemoteAuth } = pkg; 
+const { Client, RemoteAuth } = pkg;
 import { MongoClient } from 'mongodb';
 import archiver from 'archiver';
 import qr2 from 'qrcode';
@@ -35,113 +35,133 @@ const QR_LOG_COOLDOWN_MS = 10_000;
 let client = null;
 let store  = null;
 
+
+// ─── Message Queue ────────────────────────────────────────────────────────────
+// Each item: { id, phone, message, queuedAt, resolve, reject }
+const messageQueue   = [];
+let   queueRunning   = false;
+const QUEUE_INTERVAL = 5_000;   // process every 5 seconds
+const SEND_DELAY_MS  = 1_000;   // 1s gap between sends in the same batch
+
 // ─── MongoStore ───────────────────────────────────────────────────────────────
 class MongoStore {
- constructor() {
- this._client = null;
- this._db = null;
- this._bucket = null;
- }
- async init() {
- this._client = new MongoClient(MONGODB_URI, {
- serverSelectionTimeoutMS: 10_000,
- connectTimeoutMS: 10_000,
- });
- await this._client.connect();
- this._db = this._client.db('whatsapp_bot');
- this._bucket = new (await import('mongodb')).GridFSBucket(this._db);
- console.log('[MongoDB] Connected — GridFS ready ✓');
- }
- async close() {
- if (this._client) await this._client.close();
- }
- async sessionExists({ session }) {
- try {
- const files = await this._db.collection('fs.files').findOne({ filename: session });
- const exists = !!files;
- console.log(`[MongoDB] sessionExists("${session}") → ${exists}`);
- return exists;
- } catch (err) {
- console.error('[MongoDB] sessionExists error:', err.message);
- return false;
- }
- }
- async save({ session: sessionPath }) {
- const sessionKey = path.basename(sessionPath);
- try {
- // Zip the session directory
- const zipBuffer = await this._zipDirectory(sessionPath);
- 
- // Delete old file if exists
- try {
- const oldFile = await this._db.collection('fs.files').findOne({ filename: sessionKey });
- if (oldFile) {
- await this._bucket.delete(oldFile._id);
- }
- } catch {}
- 
- // Upload to GridFS
- await new Promise((resolve, reject) => {
- const uploadStream = this._bucket.openUploadStream(sessionKey);
- uploadStream.on('error', reject);
- uploadStream.on('finish', resolve);
- uploadStream.end(zipBuffer);
- });
- 
- console.log(`[MongoDB] Session "${sessionKey}" saved ✓ (${zipBuffer.length} bytes)`);
- } catch (err) {
- console.error('[MongoDB] save error:', err.message);
- throw err;
- }
- }
- async extract({ session: sessionKey, path: destPath }) {
- try {
- const file = await this._db.collection('fs.files').findOne({ filename: sessionKey });
- if (!file) throw new Error(`Session "${sessionKey}" not found in MongoDB`);
- 
- // Download from GridFS
- const chunks = [];
- await new Promise((resolve, reject) => {
- const downloadStream = this._bucket.openDownloadStream(file._id);
- downloadStream.on('error', reject);
- downloadStream.on('data', (chunk) => chunks.push(chunk));
- downloadStream.on('end', resolve);
- });
- 
- const buf = Buffer.concat(chunks);
- fs.writeFileSync(destPath, buf);
- console.log(`[MongoDB] Session "${sessionKey}" extracted → ${destPath} ✓ (${buf.length} bytes)`);
- } catch (err) {
- console.error('[MongoDB] extract error:', err.message);
- throw err;
- }
- }
- async delete({ session: sessionKey }) {
- try {
- const file = await this._db.collection('fs.files').findOne({ filename: sessionKey });
- if (file) {
- await this._bucket.delete(file._id);
- }
- console.log(`[MongoDB] Session "${sessionKey}" deleted ✓`);
- } catch (err) {
- console.error('[MongoDB] delete error:', err.message);
- }
- }
- 
- // Helper: zip a directory to buffer
- async _zipDirectory(dirPath) {
- return new Promise((resolve, reject) => {
- const chunks = [];
- const archive = archiver('zip', { zlib: { level: 6 } });
- 
- archive.on('data', (chunk) => chunks.push(chunk));
- archive.on('end', () => resolve(Buffer.concat(chunks)));
- archive.on('error', reject);
- 
- archive.directory(dirPath, false);
- archive.finalize();
- });
- }
+  constructor() {
+    this._client = null;
+    this._col    = null;
+  }
+
+  async init() {
+    this._client = new MongoClient(MONGODB_URI, {
+      serverSelectionTimeoutMS: 10_000,
+      connectTimeoutMS:         10_000,
+    });
+    await this._client.connect();
+    const db  = this._client.db('whatsapp_bot');
+    this._col = db.collection('sessions');
+    await this._col.createIndex({ session_name: 1 }, { unique: true });
+    console.log('[MongoDB] Connected — collection: sessions ✓');
+  }
+
+  async close() {
+    if (this._client) await this._client.close();
+  }
+
+  async sessionExists({ session }) {
+    try {
+      const count  = await this._col.countDocuments({ session_name: session });
+      const exists = count > 0;
+      console.log(`[MongoDB] sessionExists("${session}") → ${exists}`);
+      return exists;
+    } catch (err) {
+      console.error('[MongoDB] sessionExists error:', err.message);
+      return false;
+    }
+  }
+
+  // RemoteAuth calls save() with the SESSION DIRECTORY path.
+  // We zip the directory ourselves and store the buffer in MongoDB.
+  async save({ session: sessionDir }) {
+    const sessionName = path.basename(sessionDir);
+    console.log(`[MongoDB] save() — zipping directory: "${sessionDir}"`);
+
+    try {
+      if (!fs.existsSync(sessionDir)) {
+        // Sometimes RemoteAuth passes the bare name without the auth dir prefix.
+        // Try resolving it inside AUTH_DIR.
+        const alt = path.join(AUTH_DIR, sessionName);
+        if (fs.existsSync(alt)) {
+          console.log(`[MongoDB] Resolved session dir to: "${alt}"`);
+          sessionDir = alt;
+        } else {
+          throw new Error(`Session directory not found: "${sessionDir}" or "${alt}"`);
+        }
+      }
+
+      const zipBuffer = await this._zipDirectory(sessionDir);
+
+      await this._col.updateOne(
+        { session_name: sessionName },
+        { $set: { session_name: sessionName, zip_data: zipBuffer, updated_at: new Date() } },
+        { upsert: true }
+      );
+      console.log(`✅ [MongoDB] Session "${sessionName}" saved (${zipBuffer.length} bytes)`);
+    } catch (err) {
+      console.error('[MongoDB] save error:', err.message);
+      throw err;
+    }
+  }
+
+  // RemoteAuth calls extract() with the exact ZIP FILE PATH where it expects
+  // to find the zip. We write our buffer there; RemoteAuth extracts it itself.
+  async extract({ session: sessionName, path: destZipPath }) {
+    console.log(`[MongoDB] extract() — writing zip to: "${destZipPath}"`);
+    try {
+      const doc = await this._col.findOne({ session_name: sessionName });
+      if (!doc) throw new Error(`Session "${sessionName}" not found in MongoDB`);
+
+      const raw = doc.zip_data;
+      let buf;
+      if (Buffer.isBuffer(raw))                       buf = raw;
+      else if (raw && Buffer.isBuffer(raw.buffer))    buf = raw.buffer;
+      else if (raw && typeof raw.value === 'function') buf = Buffer.from(raw.value(), 'binary');
+      else                                             buf = Buffer.from(raw);
+
+      // Ensure the parent directory exists
+      const destDir = path.dirname(destZipPath);
+      if (!fs.existsSync(destDir)) fs.mkdirSync(destDir, { recursive: true });
+
+      // Write the zip file where RemoteAuth expects it — it will extract it
+      fs.writeFileSync(destZipPath, buf);
+      console.log(`✅ [MongoDB] Session "${sessionName}" written to "${destZipPath}" (${buf.length} bytes)`);
+    } catch (err) {
+      console.error('[MongoDB] extract error:', err.message);
+      throw err;
+    }
+  }
+
+  async delete({ session: sessionName }) {
+    try {
+      await this._col.deleteOne({ session_name: sessionName });
+      console.log(`[MongoDB] Session "${sessionName}" deleted ✓`);
+    } catch (err) {
+      console.error('[MongoDB] delete error:', err.message);
+    }
+  }
+
+  // Zip an entire directory into a Buffer
+  _zipDirectory(dirPath) {
+    return new Promise((resolve, reject) => {
+      const chunks  = [];
+      const archive = archiver('zip', { zlib: { level: 6 } });
+
+      archive.on('data',  (chunk) => chunks.push(chunk));
+      archive.on('end',   ()      => resolve(Buffer.concat(chunks)));
+      archive.on('error', reject);
+
+      archive.directory(dirPath, false);
+      archive.finalize();
+    });
+  }
 }
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
@@ -274,6 +294,7 @@ async function boot() {
   try {
     store = new MongoStore();
     await store.init();
+    startQueueProcessor();
 
     const sessionKey = `RemoteAuth-${CLIENT_ID}`;
     const hasSession = await store.sessionExists({ session: sessionKey });
@@ -447,22 +468,67 @@ app.get('/debug/session', async (_req, res) => {
   }
 });
 
-app.post('/whatsapp/send', async (req, res) => {
-  try {
-    if (WHATSAPP_API_PASSWORD && req.headers['x-password'] !== WHATSAPP_API_PASSWORD)
-      return res.status(401).json({ ok: false, error: 'Invalid password' });
-    const { phone, message } = req.body;
-    if (!phone || !message)
-      return res.status(400).json({ ok: false, error: 'phone & message required' });
-    if (!clientReady)
-      return res.status(503).json({ ok: false, error: 'Client not ready' });
-    await client.sendMessage(`${phone}@c.us`, message, { sendSeen: false });
-    return res.json({ ok: true, message: 'Message sent' });
-  } catch (err) {
-    console.error('❌ send error:', err);
-    return res.status(500).json({ ok: false, error: err.message || String(err) });
-  }
+// Enqueue a message — returns immediately with position + id
+app.post('/whatsapp/send', (req, res) => {
+  if (WHATSAPP_API_PASSWORD && req.headers['x-password'] !== WHATSAPP_API_PASSWORD)
+    return res.status(401).json({ ok: false, error: 'Invalid password' });
+
+  const { phone, message } = req.body;
+  if (!phone || !message)
+    return res.status(400).json({ ok: false, error: 'phone & message required' });
+
+  const id       = `${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
+  const position = messageQueue.length + 1;
+
+  messageQueue.push({ id, phone, message, queuedAt: new Date() });
+  console.log(`📨 [Queue] Enqueued id=${id} phone=${phone} position=${position} queueSize=${messageQueue.length}`);
+
+  return res.json({ ok: true, queued: true, id, position, queueSize: messageQueue.length });
 });
+
+// Queue status endpoint
+app.get('/whatsapp/queue/status', (_req, res) => {
+  res.json({
+    ok:        true,
+    queueSize: messageQueue.length,
+    running:   queueRunning,
+    items:     messageQueue.map(({ id, phone, queuedAt }) => ({ id, phone, queuedAt })),
+  });
+});
+
+// ─── Queue Processor ─────────────────────────────────────────────────────────
+function startQueueProcessor() {
+  if (queueRunning) return;
+  queueRunning = true;
+  console.log(`⏱️  [Queue] Processor started — interval ${QUEUE_INTERVAL / 1000}s`);
+
+  setInterval(async () => {
+    if (messageQueue.length === 0) return;
+    if (!clientReady) {
+      console.warn(`⚠️  [Queue] Client not ready — skipping tick (${messageQueue.length} items waiting)`);
+      return;
+    }
+
+    // Drain the whole queue in this tick, one message per second
+    const batch = messageQueue.splice(0, messageQueue.length);
+    console.log(`📤 [Queue] Processing ${batch.length} message(s)...`);
+
+    for (const { id, phone, message } of batch) {
+      try {
+        await client.sendMessage(`${phone}@c.us`, message, { sendSeen: false });
+        console.log(`✅ [Queue] Sent id=${id} → ${phone}`);
+      } catch (err) {
+        console.error(`❌ [Queue] Failed id=${id} → ${phone}:`, err.message);
+        // Re-enqueue at front so it retries next tick
+        messageQueue.unshift({ id, phone, message, queuedAt: new Date(), retried: true });
+        console.warn(`↩️  [Queue] Re-queued id=${id} for retry`);
+      }
+      // Small delay between sends to avoid WhatsApp rate-limiting
+      if (batch.indexOf({ id, phone, message }) < batch.length - 1)
+        await new Promise(r => setTimeout(r, SEND_DELAY_MS));
+    }
+  }, QUEUE_INTERVAL);
+}
 
 // ─── Start ────────────────────────────────────────────────────────────────────
 app.listen(PORT, '0.0.0.0', () => {

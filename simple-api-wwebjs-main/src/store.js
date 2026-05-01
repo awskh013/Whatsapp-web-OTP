@@ -49,13 +49,21 @@ export class MongoStore {
 
   // ─── Save zip to MongoDB ───────────────────────────────────────────────────
   async save({ session: sessionPath }) {
-    const zipPath    = sessionPath + '.zip';
+    let zipPath    = sessionPath + '.zip';
     const sessionKey = path.basename(sessionPath);
+
+    // FIX: Look inside the default auth directory if it's not in the root
+    const alternateZipPath = path.join('.wwebjs_auth', `${sessionKey}.zip`);
 
     try {
       if (!fs.existsSync(zipPath)) {
-        throw new Error(`Zip not found at: ${zipPath}`);
+        if (fs.existsSync(alternateZipPath)) {
+          zipPath = alternateZipPath; // Re-route to the correct location
+        } else {
+          throw new Error(`Zip not found at: ${zipPath} or ${alternateZipPath}`);
+        }
       }
+      
       const data = fs.readFileSync(zipPath);
 
       await this._col.updateOne(
@@ -76,7 +84,6 @@ export class MongoStore {
       throw err;
     }
   }
-
   // ─── Extract zip from MongoDB to disk ─────────────────────────────────────
   async extract({ session: sessionKey, path: destPath }) {
     try {

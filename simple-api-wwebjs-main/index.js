@@ -114,32 +114,35 @@ class MongoStore {
  throw err;
  }
  }
- async extract({ session: sessionName, path: destZipPath }) {
+async extract({ session: sessionName, path: destZipPath }) {
  console.log(`[MongoDB] extract() — writing zip to: "${destZipPath}"`);
  try {
  const file = await this._db.collection('fs.files').findOne({ filename: sessionName });
  if (!file) throw new Error(`Session "${sessionName}" not found in MongoDB`);
  
- // Download from GridFS
- const chunks = [];
- await new Promise((resolve, reject) => {
- const downloadStream = this._bucket.openDownloadStream(file._id);
- downloadStream.on('error', reject);
- downloadStream.on('data', (chunk) => chunks.push(chunk));
- downloadStream.on('end', resolve);
- });
- 
- const buf = Buffer.concat(chunks);
+ // Download from GridFS with proper error handling
  const destDir = path.dirname(destZipPath);
  if (!fs.existsSync(destDir)) fs.mkdirSync(destDir, { recursive: true });
- fs.writeFileSync(destZipPath, buf);
- console.log(`✅ [MongoDB] Session "${sessionName}" written to "${destZipPath}" (${buf.length} bytes)`);
+ 
+ await new Promise((resolve, reject) => {
+ const downloadStream = this._bucket.openDownloadStream(file._id);
+ const writeStream = fs.createWriteStream(destZipPath);
+ 
+ downloadStream.on('error', reject);
+ writeStream.on('error', reject);
+ writeStream.on('finish', resolve);
+ 
+ downloadStream.pipe(writeStream);
+ });
+ 
+ const stats = fs.statSync(destZipPath);
+ console.log(`✅ [MongoDB] Session "${sessionName}" written to "${destZipPath}" (${stats.size} bytes)`);
  } catch (err) {
  console.error('[MongoDB] extract error:', err.message);
  throw err;
  }
  }
- async delete({ session: sessionName }) {
+async delete({ session: sessionName }) {
  try {
  const file = await this._db.collection('fs.files').findOne({ filename: sessionName });
  if (file) {

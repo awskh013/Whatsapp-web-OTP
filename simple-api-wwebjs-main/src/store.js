@@ -20,7 +20,7 @@ export class MongoStore {
     });
 
     await this._client.connect();
-    const db  = this._client.db('whatsapp-bot');
+    const db  = this._client.db('whatsapp_bot');
     this._col = db.collection('sessions');
 
     await this._col.createIndex({ session_name: 1 }, { unique: true });

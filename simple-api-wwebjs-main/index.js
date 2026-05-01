@@ -44,124 +44,125 @@ const QUEUE_INTERVAL = 5_000;   // process every 5 seconds
 const SEND_DELAY_MS  = 1_000;   // 1s gap between sends in the same batch
 
 // ─── MongoStore ───────────────────────────────────────────────────────────────
+// ─── MongoStore (with GridFS) ─────────────────────────────────────────────────
 class MongoStore {
-  constructor() {
-    this._client = null;
-    this._col    = null;
-  }
-
-  async init() {
-    this._client = new MongoClient(MONGODB_URI, {
-      serverSelectionTimeoutMS: 10_000,
-      connectTimeoutMS:         10_000,
-    });
-    await this._client.connect();
-    const db  = this._client.db('whatsapp_bot');
-    this._col = db.collection('sessions');
-    await this._col.createIndex({ session_name: 1 }, { unique: true });
-    console.log('[MongoDB] Connected — collection: sessions ✓');
-  }
-
-  async close() {
-    if (this._client) await this._client.close();
-  }
-
-  async sessionExists({ session }) {
-    try {
-      const count  = await this._col.countDocuments({ session_name: session });
-      const exists = count > 0;
-      console.log(`[MongoDB] sessionExists("${session}") → ${exists}`);
-      return exists;
-    } catch (err) {
-      console.error('[MongoDB] sessionExists error:', err.message);
-      return false;
-    }
-  }
-
-  // RemoteAuth calls save() with the SESSION DIRECTORY path.
-  // We zip the directory ourselves and store the buffer in MongoDB.
-  async save({ session: sessionDir }) {
-    const sessionName = path.basename(sessionDir);
-    console.log(`[MongoDB] save() — zipping directory: "${sessionDir}"`);
-
-    try {
-      if (!fs.existsSync(sessionDir)) {
-        // Sometimes RemoteAuth passes the bare name without the auth dir prefix.
-        // Try resolving it inside AUTH_DIR.
-        const alt = path.join(AUTH_DIR, sessionName);
-        if (fs.existsSync(alt)) {
-          console.log(`[MongoDB] Resolved session dir to: "${alt}"`);
-          sessionDir = alt;
-        } else {
-          throw new Error(`Session directory not found: "${sessionDir}" or "${alt}"`);
-        }
-      }
-
-      const zipBuffer = await this._zipDirectory(sessionDir);
-
-      await this._col.updateOne(
-        { session_name: sessionName },
-        { $set: { session_name: sessionName, zip_data: zipBuffer, updated_at: new Date() } },
-        { upsert: true }
-      );
-      console.log(`✅ [MongoDB] Session "${sessionName}" saved (${zipBuffer.length} bytes)`);
-    } catch (err) {
-      console.error('[MongoDB] save error:', err.message);
-      throw err;
-    }
-  }
-
-  // RemoteAuth calls extract() with the exact ZIP FILE PATH where it expects
-  // to find the zip. We write our buffer there; RemoteAuth extracts it itself.
-  async extract({ session: sessionName, path: destZipPath }) {
-    console.log(`[MongoDB] extract() — writing zip to: "${destZipPath}"`);
-    try {
-      const doc = await this._col.findOne({ session_name: sessionName });
-      if (!doc) throw new Error(`Session "${sessionName}" not found in MongoDB`);
-
-      const raw = doc.zip_data;
-      let buf;
-      if (Buffer.isBuffer(raw))                       buf = raw;
-      else if (raw && Buffer.isBuffer(raw.buffer))    buf = raw.buffer;
-      else if (raw && typeof raw.value === 'function') buf = Buffer.from(raw.value(), 'binary');
-      else                                             buf = Buffer.from(raw);
-
-      // Ensure the parent directory exists
-      const destDir = path.dirname(destZipPath);
-      if (!fs.existsSync(destDir)) fs.mkdirSync(destDir, { recursive: true });
-
-      // Write the zip file where RemoteAuth expects it — it will extract it
-      fs.writeFileSync(destZipPath, buf);
-      console.log(`✅ [MongoDB] Session "${sessionName}" written to "${destZipPath}" (${buf.length} bytes)`);
-    } catch (err) {
-      console.error('[MongoDB] extract error:', err.message);
-      throw err;
-    }
-  }
-
-  async delete({ session: sessionName }) {
-    try {
-      await this._col.deleteOne({ session_name: sessionName });
-      console.log(`[MongoDB] Session "${sessionName}" deleted ✓`);
-    } catch (err) {
-      console.error('[MongoDB] delete error:', err.message);
-    }
-  }
-
-  // Zip an entire directory into a Buffer
-  _zipDirectory(dirPath) {
-    return new Promise((resolve, reject) => {
-      const chunks  = [];
-      const archive = archiver('zip', { zlib: { level: 6 } });
-
-      archive.on('data',  (chunk) => chunks.push(chunk));
-      archive.on('end',   ()      => resolve(Buffer.concat(chunks)));
-      archive.on('error', reject);
-
-      archive.directory(dirPath, false);
-      archive.finalize();
-    });
-  }
+ constructor() {
+ this._client = null;
+ this._db = null;
+ this._bucket = null;
+ }
+ async init() {
+ this._client = new MongoClient(MONGODB_URI, {
+ serverSelectionTimeoutMS: 10_000,
+ connectTimeoutMS: 10_000,
+ });
+ await this._client.connect();
+ this._db = this._client.db('whatsapp_bot');
+ const { GridFSBucket } = await import('mongodb');
+ this._bucket = new GridFSBucket(this._db);
+ console.log('[MongoDB] Connected — GridFS ready ✓');
+ }
+ async close() {
+ if (this._client) await this._client.close();
+ }
+ async sessionExists({ session }) {
+ try {
+ const files = await this._db.collection('fs.files').findOne({ filename: session });
+ const exists = !!files;
+ console.log(`[MongoDB] sessionExists("${session}") → ${exists}`);
+ return exists;
+ } catch (err) {
+ console.error('[MongoDB] sessionExists error:', err.message);
+ return false;
+ }
+ }
+ async save({ session: sessionDir }) {
+ const sessionName = path.basename(sessionDir);
+ console.log(`[MongoDB] save() — zipping directory: "${sessionDir}"`);
+ try {
+ if (!fs.existsSync(sessionDir)) {
+ const alt = path.join(AUTH_DIR, sessionName);
+ if (fs.existsSync(alt)) {
+ console.log(`[MongoDB] Resolved session dir to: "${alt}"`);
+ sessionDir = alt;
+ } else {
+ throw new Error(`Session directory not found: "${sessionDir}" or "${alt}"`);
+ }
+ }
+ const zipBuffer = await this._zipDirectory(sessionDir);
+ 
+ // Delete old file if exists
+ try {
+ const oldFile = await this._db.collection('fs.files').findOne({ filename: sessionName });
+ if (oldFile) {
+ await this._bucket.delete(oldFile._id);
+ console.log(`[MongoDB] Deleted old session file`);
+ }
+ } catch {}
+ 
+ // Upload to GridFS
+ await new Promise((resolve, reject) => {
+ const uploadStream = this._bucket.openUploadStream(sessionName);
+ uploadStream.on('error', reject);
+ uploadStream.on('finish', resolve);
+ uploadStream.end(zipBuffer);
+ });
+ 
+ console.log(`✅ [MongoDB] Session "${sessionName}" saved (${zipBuffer.length} bytes)`);
+ } catch (err) {
+ console.error('[MongoDB] save error:', err.message);
+ throw err;
+ }
+ }
+ async extract({ session: sessionName, path: destZipPath }) {
+ console.log(`[MongoDB] extract() — writing zip to: "${destZipPath}"`);
+ try {
+ const file = await this._db.collection('fs.files').findOne({ filename: sessionName });
+ if (!file) throw new Error(`Session "${sessionName}" not found in MongoDB`);
+ 
+ // Download from GridFS
+ const chunks = [];
+ await new Promise((resolve, reject) => {
+ const downloadStream = this._bucket.openDownloadStream(file._id);
+ downloadStream.on('error', reject);
+ downloadStream.on('data', (chunk) => chunks.push(chunk));
+ downloadStream.on('end', resolve);
+ });
+ 
+ const buf = Buffer.concat(chunks);
+ const destDir = path.dirname(destZipPath);
+ if (!fs.existsSync(destDir)) fs.mkdirSync(destDir, { recursive: true });
+ fs.writeFileSync(destZipPath, buf);
+ console.log(`✅ [MongoDB] Session "${sessionName}" written to "${destZipPath}" (${buf.length} bytes)`);
+ } catch (err) {
+ console.error('[MongoDB] extract error:', err.message);
+ throw err;
+ }
+ }
+ async delete({ session: sessionName }) {
+ try {
+ const file = await this._db.collection('fs.files').findOne({ filename: sessionName });
+ if (file) {
+ await this._bucket.delete(file._id);
+ }
+ console.log(`[MongoDB] Session "${sessionName}" deleted ✓`);
+ } catch (err) {
+ console.error('[MongoDB] delete error:', err.message);
+ }
+ }
+ 
+ // Zip an entire directory into a Buffer
+ _zipDirectory(dirPath) {
+ return new Promise((resolve, reject) => {
+ const chunks = [];
+ const archive = archiver('zip', { zlib: { level: 6 } });
+ archive.on('data', (chunk) => chunks.push(chunk));
+ archive.on('end', () => resolve(Buffer.concat(chunks)));
+ archive.on('error', reject);
+ archive.directory(dirPath, false);
+ archive.finalize();
+ });
+ }
 }
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────

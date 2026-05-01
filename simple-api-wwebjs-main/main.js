@@ -26,91 +26,15 @@ if (!MONGODB_URI) {
   process.exit(1);
 }
 
+// small helpers
 const wait = (ms) => new Promise((r) => setTimeout(r, ms));
 let qrValue = null;
 let clientReady = false;
 let initializing = false;
 let lastQrLogAt = 0;
-const QR_LOG_COOLDOWN_MS = 10_000;
+const QR_LOG_COOLDOWN_MS = 10_000; // log QR at most once per 10s
 
-// ✅ Queue
-const messageQueue = [];
-let queueRunning = false;
-let lastQueueActivity = Date.now(); // ✅ Watchdog tracker
-
-async function processQueue() {
-  if (queueRunning || messageQueue.length === 0) return;
-  queueRunning = true;
-  lastQueueActivity = Date.now(); // ✅ سجّل وقت البداية
-
-  try {
-    while (messageQueue.length > 0) {
-      if (!clientReady) {
-        console.warn("[Queue] Client not ready — waiting 10s...");
-        lastQueueActivity = Date.now(); // ✅ تحديث حتى وهي تنتظر
-        await wait(10000);
-        continue;
-      }
-
-      const item = messageQueue[0];
-
-      try {
-        await client.sendMessage(`${item.phone}@c.us`, item.message, { sendSeen: false });
-        messageQueue.shift();
-        lastQueueActivity = Date.now(); // ✅ تحديث بعد كل إرسال
-        console.log(`[Queue] ✅ Sent to ${item.phone} — ${messageQueue.length} remaining`);
-        item.resolve({ ok: true });
-      } catch (err) {
-        messageQueue.shift();
-        lastQueueActivity = Date.now();
-        console.error(`[Queue] ❌ Failed to send to ${item.phone}:`, err.message);
-        item.reject(err);
-      }
-
-      if (messageQueue.length > 0) {
-        console.log(`[Queue] ⏳ Waiting 60s before next message...`);
-        lastQueueActivity = Date.now(); // ✅ تحديث قبل الانتظار
-        await wait(60000);
-      }
-    }
-  } catch (err) {
-    console.error("[Queue] 💥 Unexpected queue error:", err.message);
-  } finally {
-    queueRunning = false; // ✅ دايماً يتحرر حتى لو صار أي شي
-  }
-}
-
-// ✅ Watchdog — يفحص القائمة كل دقيقة ويعيد تشغيلها لو تجمدت
-setInterval(() => {
-  // حالة 1: في رسائل بالقائمة بس processQueue مش شغالة
-  if (messageQueue.length > 0 && !queueRunning) {
-    console.warn("[Watchdog] ⚠️ Queue has items but not running — restarting...");
-    processQueue();
-    return;
-  }
-
-  // حالة 2: queueRunning = true بس ما في نشاط من 3 دقايق = مجمدة
-  if (queueRunning && messageQueue.length > 0) {
-    const frozenFor = Date.now() - lastQueueActivity;
-    if (frozenFor > 3 * 60 * 1000) {
-      console.warn(`[Watchdog] ⚠️ Queue frozen for ${Math.round(frozenFor / 1000)}s — force restarting...`);
-      queueRunning = false;
-      processQueue();
-    }
-  }
-}, 60000);
-
-function queueMessage(phone, message) {
-  return new Promise((resolve, reject) => {
-    messageQueue.push({ phone, message, resolve, reject });
-    console.log(`[Queue] 📥 Queued for ${phone} — total in queue: ${messageQueue.length}`);
-    processQueue();
-  });
-}
-
-// ---------------------------
-// Chromium detect
-// ---------------------------
+// ensure chromium path if available
 function detectChromium() {
   const candidates = [process.env.PUPPETEER_EXECUTABLE_PATH, "/usr/bin/chromium", "/usr/bin/chromium-browser"].filter(Boolean);
   for (const p of candidates) {
@@ -147,7 +71,7 @@ async function connectMongo() {
 async function findRemoteAuthCollections(clientId = CLIENT_ID) {
   const names = (await mongoose.connection.db.listCollections().toArray()).map(c => c.name);
   const matches = names.filter(n => n.startsWith(`whatsapp-RemoteAuth-${clientId}`));
-  return matches;
+  return matches; // may be like ['whatsapp-RemoteAuth-render-stable-client.files', '...chunks']
 }
 
 async function backupRemoteAuthCollections() {
@@ -176,6 +100,7 @@ async function restoreRemoteAuthFromBackup() {
     const db = mongoose.connection.db;
     const backup = await db.collection("sessions_backup").findOne({ _id: "latest" });
     if (!backup || !backup.data) return false;
+    // restore each collection if missing
     for (const [collName, docs] of Object.entries(backup.data)) {
       const exists = await db.listCollections({ name: collName }).hasNext();
       if (!exists) {
@@ -220,18 +145,8 @@ async function initWhatsAppClient() {
   if (process.env.PUPPETEER_EXECUTABLE_PATH) puppeteerOptions.executablePath = process.env.PUPPETEER_EXECUTABLE_PATH;
   else if (FORCE_PUPPETEER) puppeteerOptions.executablePath = "/usr/bin/chromium";
 
-
-  if (!fs.existsSync("/tmp/wwebjs")) {
-  fs.mkdirSync("/tmp/wwebjs", { recursive: true });
-}
-
   client = new Client({
-    authStrategy: new RemoteAuth({
-    clientId: CLIENT_ID,
-    store,
-    backupSyncIntervalMs: 300000,
-    dataPath: "/tmp/wwebjs" // ✅ هذا هو الحل
-  }),
+    authStrategy: new RemoteAuth({ clientId: CLIENT_ID, store, backupSyncIntervalMs: 300000 }),
     puppeteer: puppeteerOptions,
     takeoverOnConflict: true,
     restartOnAuthFail: true,
@@ -244,6 +159,8 @@ async function initWhatsAppClient() {
     if (now - lastQrLogAt > QR_LOG_COOLDOWN_MS) {
       console.log("📱 QR generated — open /whatsapp/login to scan");
       lastQrLogAt = now;
+    } else {
+      // suppress frequent QR spam
     }
   });
 
@@ -260,7 +177,6 @@ async function initWhatsAppClient() {
     clientReady = true;
     qrValue = null;
     console.log("🤖 WhatsApp client READY");
-    processQueue(); // ✅ شغّل القائمة لو كان فيها رسائل منتظرة
   });
 
   client.on("auth_failure", (msg) => {
@@ -273,6 +189,7 @@ async function initWhatsAppClient() {
     clientReady = false;
     try { await client.destroy(); } catch {}
     initializing = false;
+    // retry after delay
     setTimeout(() => {
       console.log("♻️ attempting re-init after disconnect...");
       initWhatsAppClient();
@@ -291,7 +208,7 @@ async function initWhatsAppClient() {
 }
 
 // ---------------------------
-// Express routes
+// Express routes (preserve old endpoints)
 // ---------------------------
 app.get("/", (req, res) => res.send("✅ WhatsApp bot (Render optimized). Use /whatsapp/login and /whatsapp/send"));
 
@@ -315,31 +232,7 @@ app.get("/whatsapp/login", async (req, res) => {
 });
 
 app.get("/whatsapp/status", (req, res) => {
-  res.json({
-    ok: true,
-    clientReady,
-    hasQR: !!qrValue,
-    queueSize: messageQueue.length,
-    queueRunning, // ✅
-    lastQueueActivity: new Date(lastQueueActivity).toISOString(), // ✅
-  });
-});
-
-// ✅ تشوف الرسائل المنتظرة بالقائمة
-app.get("/whatsapp/queue", (req, res) => {
-  res.json({
-    queueSize: messageQueue.length,
-    queueRunning,
-    frozenForSeconds: Math.round((Date.now() - lastQueueActivity) / 1000),
-    items: messageQueue.map(i => ({ phone: i.phone })),
-  });
-});
-
-// ✅ تعيد تشغيل القائمة يدوياً لو احتجت
-app.post("/whatsapp/queue/restart", (req, res) => {
-  queueRunning = false;
-  processQueue();
-  res.json({ ok: true, message: "Queue restarted", queueSize: messageQueue.length });
+  res.json({ ok: true, clientReady, hasQR: !!qrValue });
 });
 
 app.post("/whatsapp/send", async (req, res) => {
@@ -349,13 +242,9 @@ app.post("/whatsapp/send", async (req, res) => {
     }
     const { phone, message } = req.body;
     if (!phone || !message) return res.status(400).json({ ok: false, error: "phone & message required" });
-
-    const position = messageQueue.length + 1;
-    queueMessage(phone, message).catch(err =>
-      console.error(`[Queue] background error for ${phone}:`, err.message)
-    );
-
-    return res.json({ ok: true, message: "Queued", position });
+    if (!clientReady) return res.status(503).json({ ok: false, error: "Client not ready" });
+    await client.sendMessage(`${phone}@c.us`, message , { sendSeen: false });
+    return res.json({ ok: true, message: "Message sent" });
   } catch (err) {
     console.error("❌ send error:", err);
     return res.status(500).json({ ok: false, error: err.message || String(err) });
@@ -363,15 +252,18 @@ app.post("/whatsapp/send", async (req, res) => {
 });
 
 // ---------------------------
-// Start server
+// Start server IMMEDIATELY to satisfy Render health checks
+// (so Render won't send SIGTERM due to "no open ports")
 // ---------------------------
 app.listen(PORT, "0.0.0.0", async () => {
   console.log(`🚀 Server listening on 0.0.0.0:${PORT}`);
 
+  // Ensure mongo connected and try to restore if needed
   try {
     const cols = await connectMongo();
     const remoteAuth = await findRemoteAuthCollections();
     if (!remoteAuth.length) {
+      // attempt restore from backup (if exists)
       const restored = await restoreRemoteAuthFromBackup();
       if (restored) {
         console.log("✅ Restored RemoteAuth from sessions_backup — continuing");
@@ -385,12 +277,13 @@ app.listen(PORT, "0.0.0.0", async () => {
     console.warn("⚠️ Error during initial DB checks:", err?.message || err);
   }
 
+  // init client in background after small delay (allow Render health to settle)
   console.log("⏳ Delaying 3s then initializing WhatsApp client in background...");
   setTimeout(() => initWhatsAppClient(), 3000);
 });
 
 // ---------------------------
-// SIGTERM — backup and close
+// SIGTERM (graceful) — backup and close
 // ---------------------------
 process.on("SIGTERM", async () => {
   console.log("🛑 SIGTERM received — attempting graceful shutdown");

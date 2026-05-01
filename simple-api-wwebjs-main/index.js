@@ -2,7 +2,7 @@ import dotenv from 'dotenv';
 import express from 'express';
 import pkg from 'whatsapp-web.js';
 const { Client, RemoteAuth } = pkg;
-import { MongoClient, Binary } from 'mongodb';
+import { MongoClient } from 'mongodb';
 import archiver from 'archiver';
 import qr2 from 'qrcode';
 import fs from 'fs';
@@ -93,7 +93,7 @@ class MongoStore {
 
       await this._col.updateOne(
         { session_name: sessionName },
-        { $set: { session_name: sessionName, zip_data: new Binary(zipBuffer), updated_at: new Date() } },
+        { $set: { session_name: sessionName, zip_data: zipBuffer, updated_at: new Date() } },
         { upsert: true }
       );
       console.log(`✅ [MongoDB] Session "${sessionName}" saved (${zipBuffer.length} bytes)`);

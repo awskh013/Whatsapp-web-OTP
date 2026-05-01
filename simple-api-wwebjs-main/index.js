@@ -172,22 +172,35 @@ function detectChromium() {
 }
 
 function buildPuppeteerOptions() {
-  const opts = {
-    headless: true,
-    args: [
-      '--no-sandbox',
-      '--disable-setuid-sandbox',
-      '--disable-dev-shm-usage',
-      '--disable-extensions',
-      '--disable-gpu',
-      '--disable-background-timer-throttling',
-    ],
-  };
-  if (process.env.PUPPETEER_EXECUTABLE_PATH)
-    opts.executablePath = process.env.PUPPETEER_EXECUTABLE_PATH;
-  else if (FORCE_PUPPETEER)
-    opts.executablePath = '/usr/bin/chromium';
-  return opts;
+ const opts = {
+ headless: true,
+ protocolTimeout: 180000, // 3 minutes
+ args: [
+ '--no-sandbox',
+ '--disable-setuid-sandbox',
+ '--disable-dev-shm-usage',
+ '--disable-extensions',
+ '--disable-gpu',
+ '--disable-background-timer-throttling',
+ '--disable-breakpad',
+ '--disable-client-side-phishing-detection',
+ '--disable-component-extensions-with-background-pages',
+ '--disable-default-apps',
+ '--disable-hang-monitor',
+ '--disable-popup-blocking',
+ '--disable-prompt-on-repost',
+ '--disable-sync',
+ '--metrics-recording-only',
+ '--mute-audio',
+ '--no-first-run',
+ '--safebrowsing-disable-auto-update',
+ ],
+ };
+ if (process.env.PUPPETEER_EXECUTABLE_PATH)
+ opts.executablePath = process.env.PUPPETEER_EXECUTABLE_PATH;
+ else if (FORCE_PUPPETEER)
+ opts.executablePath = '/usr/bin/chromium';
+ return opts;
 }
 
 // ─── WhatsApp client ──────────────────────────────────────────────────────────

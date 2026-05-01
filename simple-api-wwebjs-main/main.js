@@ -147,7 +147,7 @@ async function initWhatsAppClient() {
   else if (FORCE_PUPPETEER) puppeteerOptions.executablePath = "/usr/bin/chromium";
 
   client = new Client({
-    authStrategy: new RemoteAuth({ clientId: CLIENT_ID, store : store, backupSyncIntervalMs: 300000, dataPath: './.wwebjs_auth' }),
+    authStrategy:new RemoteAuth({ clientId: CLIENT_ID, store, backupSyncIntervalMs: 10_000, dataPath: './.wwebjs_auth' }),
     puppeteer: puppeteerOptions,
     takeoverOnConflict: true,
     restartOnAuthFail: true,
@@ -175,11 +175,22 @@ async function initWhatsAppClient() {
     await backupRemoteAuthCollections();
 });
 
-  client.on("ready", () => {
+ client.on("ready", async () => {
     clientReady = true;
     qrValue = null;
-    console.log("🤖 WhatsApp client READY");
-  });
+    console.log("🤖 WhatsApp client READY — no QR needed next deploy");
+
+    // Force save immediately — don't wait for the interval
+    setTimeout(async () => {
+        try {
+            console.log("💾 Forcing immediate session save...");
+            await store.save({ session: `RemoteAuth-${CLIENT_ID}` });
+            console.log("✅ Immediate session save complete");
+        } catch (err) {
+            console.error("❌ Immediate session save failed:", err.message);
+        }
+    }, 5_000); // 5s delay lets RemoteAuth finish writing the zip first
+});
 
   client.on("auth_failure", (msg) => {
     console.error("❌ auth_failure:", msg);

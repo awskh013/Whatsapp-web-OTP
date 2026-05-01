@@ -117,8 +117,6 @@ class MongoStore {
  }
  }
  
- // Helper: zip a directory to buffer
-// Helper: zip a directory to buffer
  async _zipDirectory(dirPath) {
  return new Promise((resolve, reject) => {
  const chunks = [];

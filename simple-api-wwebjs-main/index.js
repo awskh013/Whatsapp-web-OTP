@@ -100,7 +100,7 @@ class MongoStore {
  const destDir = path.dirname(destPath);
  if (!fs.existsSync(destDir)) fs.mkdirSync(destDir, { recursive: true });
  
- // Unzip to destination
+ // Unzip buffer directly to destination directory
  await this._unzipBuffer(buf, destDir);
  console.log(`[MongoDB] Session "${sessionKey}" extracted → ${destDir} ✓ (${buf.length} bytes)`);
  } catch (err) {
@@ -116,6 +116,34 @@ class MongoStore {
  console.error('[MongoDB] delete error:', err.message);
  }
  }
+ 
+ // Helper: zip a directory to buffer
+ _zipDirectory(dirPath) {
+ return new Promise((resolve, reject) => {
+ const chunks = [];
+ const archive = archiver('zip', { zlib: { level: 6 } });
+ 
+ archive.on('data', (chunk) => chunks.push(chunk));
+ archive.on('end', () => resolve(Buffer.concat(chunks)));
+ archive.on('error', reject);
+ 
+ archive.directory(dirPath, false);
+ archive.finalize();
+ });
+ }
+ 
+ // Helper: unzip buffer directly to directory
+ _unzipBuffer(buffer, destDir) {
+ return new Promise((resolve, reject) => {
+ const stream = Readable.from(buffer);
+ 
+ stream
+ .pipe(Extract({ path: destDir }))
+ .on('finish', resolve)
+ .on('error', reject);
+ });
+ }
+}
  
  // Helper: zip a directory to buffer
  _zipDirectory(dirPath) {

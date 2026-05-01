@@ -20,7 +20,7 @@ export class MongoStore {
     });
 
     await this._client.connect();
-    const db  = this._client.db('whatsapp_bot');
+    const db  = this._client.db('whatsapp-bot');
     this._col = db.collection('sessions');
 
     await this._col.createIndex({ session_name: 1 }, { unique: true });
@@ -48,42 +48,38 @@ export class MongoStore {
   }
 
   // ─── Save zip to MongoDB ───────────────────────────────────────────────────
-  async save({ session: sessionPath }) {
-    let zipPath    = sessionPath + '.zip';
-    const sessionKey = path.basename(sessionPath);
+ async save({ session: sessionPath }) {
+  const sessionKey = path.basename(sessionPath);
+  
+  // Define where the file actually is on Render
+  const rootZip = `${sessionPath}.zip`;
+  const hiddenZip = path.join('.wwebjs_auth', `${sessionKey}.zip`);
+  
+  // Select the path that actually exists
+  const finalPath = fs.existsSync(rootZip) ? rootZip : (fs.existsSync(hiddenZip) ? hiddenZip : null);
 
-    // FIX: Look inside the default auth directory if it's not in the root
-    const alternateZipPath = path.join('.wwebjs_auth', `${sessionKey}.zip`);
-
-    try {
-      if (!fs.existsSync(zipPath)) {
-        if (fs.existsSync(alternateZipPath)) {
-          zipPath = alternateZipPath; // Re-route to the correct location
-        } else {
-          throw new Error(`Zip not found at: ${zipPath} or ${alternateZipPath}`);
-        }
-      }
-      
-      const data = fs.readFileSync(zipPath);
-
-      await this._col.updateOne(
-        { session_name: sessionKey },
-        {
-          $set: {
-            session_name: sessionKey,
-            zip_data:     new Binary(data),
-            updated_at:   new Date(),
-          },
-        },
-        { upsert: true }
-      );
-
-      console.log(`[MongoDB] Session "${sessionKey}" saved ✓ (${data.length} bytes)`);
-    } catch (err) {
-      console.error('[MongoDB] save error:', err.message);
-      throw err;
+  try {
+    if (!finalPath) {
+      throw new Error(`Zip file not found in root or .wwebjs_auth folder`);
     }
+
+    const data = fs.readFileSync(finalPath);
+    await this._col.updateOne(
+      { session_name: sessionKey },
+      {
+        $set: {
+          session_name: sessionKey,
+          zip_data: new Binary(data),
+          updated_at: new Date(),
+        },
+      },
+      { upsert: true }
+    );
+    console.log(`[MongoDB] Session "${sessionKey}" successfully saved to DB ✓`);
+  } catch (err) {
+    console.error('[MongoDB] Save failed:', err.message);
   }
+}
   // ─── Extract zip from MongoDB to disk ─────────────────────────────────────
   async extract({ session: sessionKey, path: destPath }) {
     try {

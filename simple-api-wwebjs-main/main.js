@@ -56,7 +56,7 @@ function detectChromium() {
 async function connectMongo() {
   console.log("⏳ Connecting to MongoDB Atlas...");
   await mongoose.connect(MONGODB_URI, {
-    dbName: "whatsapp-bot",
+    dbName: "whatsapp_bot",
     useNewUrlParser: true,
     useUnifiedTopology: true,
   });

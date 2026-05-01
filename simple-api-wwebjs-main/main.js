@@ -147,7 +147,7 @@ async function initWhatsAppClient() {
   else if (FORCE_PUPPETEER) puppeteerOptions.executablePath = "/usr/bin/chromium";
 
   client = new Client({
-    authStrategy: new RemoteAuth({ clientId: CLIENT_ID, store : store, backupSyncIntervalMs: 300000 }),
+    authStrategy: new RemoteAuth({ clientId: CLIENT_ID, store : store, backupSyncIntervalMs: 300000, dataPath: './.wwebjs_auth' }),
     puppeteer: puppeteerOptions,
     takeoverOnConflict: true,
     restartOnAuthFail: true,

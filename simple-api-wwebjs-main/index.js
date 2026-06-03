@@ -8,7 +8,7 @@ import qr2 from 'qrcode';
 import fs from 'fs';
 import path from 'path';
 import { spawnSync } from 'child_process';
-import { execSync } from "child_process";
+import { execSync } from 'child_process';
 
 dotenv.config();
 
@@ -36,137 +36,132 @@ const QR_LOG_COOLDOWN_MS = 10_000;
 let client = null;
 let store  = null;
 
-
 // ─── Message Queue ────────────────────────────────────────────────────────────
-// Each item: { id, phone, message, queuedAt, resolve, reject }
 const messageQueue   = [];
 let   queueRunning   = false;
-const QUEUE_INTERVAL = 5_000;   // process every 5 seconds
-const SEND_DELAY_MS  = 5_000;   // 1s gap between sends in the same batch
+const QUEUE_INTERVAL = 5_000;
+const SEND_DELAY_MS  = 5_000;
 
-// ─── MongoStore ───────────────────────────────────────────────────────────────
 // ─── MongoStore (with GridFS) ─────────────────────────────────────────────────
 class MongoStore {
- constructor() {
- this._client = null;
- this._db = null;
- this._bucket = null;
- }
- async init() {
- this._client = new MongoClient(MONGODB_URI, {
- serverSelectionTimeoutMS: 10_000,
- connectTimeoutMS: 10_000,
- });
- await this._client.connect();
- this._db = this._client.db('whatsapp_bot');
- const { GridFSBucket } = await import('mongodb');
- this._bucket = new GridFSBucket(this._db);
- console.log('[MongoDB] Connected — GridFS ready ✓');
- }
- async close() {
- if (this._client) await this._client.close();
- }
- async sessionExists({ session }) {
- try {
- const files = await this._db.collection('fs.files').findOne({ filename: session });
- const exists = !!files;
- console.log(`[MongoDB] sessionExists("${session}") → ${exists}`);
- return exists;
- } catch (err) {
- console.error('[MongoDB] sessionExists error:', err.message);
- return false;
- }
- }
- async save({ session: sessionDir }) {
- const sessionName = path.basename(sessionDir);
- console.log(`[MongoDB] save() — zipping directory: "${sessionDir}"`);
- try {
- if (!fs.existsSync(sessionDir)) {
- const alt = path.join(AUTH_DIR, sessionName);
- if (fs.existsSync(alt)) {
- console.log(`[MongoDB] Resolved session dir to: "${alt}"`);
- sessionDir = alt;
- } else {
- throw new Error(`Session directory not found: "${sessionDir}" or "${alt}"`);
- }
- }
- const zipBuffer = await this._zipDirectory(sessionDir);
- 
- // Delete old file if exists
- try {
- const oldFile = await this._db.collection('fs.files').findOne({ filename: sessionName });
- if (oldFile) {
- await this._bucket.delete(oldFile._id);
- console.log(`[MongoDB] Deleted old session file`);
- }
- } catch {}
- 
- // Upload to GridFS
- await new Promise((resolve, reject) => {
- const uploadStream = this._bucket.openUploadStream(sessionName);
- uploadStream.on('error', reject);
- uploadStream.on('finish', resolve);
- uploadStream.end(zipBuffer);
- });
- 
- console.log(`✅ [MongoDB] Session "${sessionName}" saved (${zipBuffer.length} bytes)`);
- } catch (err) {
- console.error('[MongoDB] save error:', err.message);
- throw err;
- }
- }
-async extract({ session: sessionName, path: destZipPath }) {
- console.log(`[MongoDB] extract() — writing zip to: "${destZipPath}"`);
- try {
- const file = await this._db.collection('fs.files').findOne({ filename: sessionName });
- if (!file) throw new Error(`Session "${sessionName}" not found in MongoDB`);
- 
- // Download from GridFS with proper error handling
- const destDir = path.dirname(destZipPath);
- if (!fs.existsSync(destDir)) fs.mkdirSync(destDir, { recursive: true });
- 
- await new Promise((resolve, reject) => {
- const downloadStream = this._bucket.openDownloadStream(file._id);
- const writeStream = fs.createWriteStream(destZipPath);
- 
- downloadStream.on('error', reject);
- writeStream.on('error', reject);
- writeStream.on('finish', resolve);
- 
- downloadStream.pipe(writeStream);
- });
- 
- const stats = fs.statSync(destZipPath);
- console.log(`✅ [MongoDB] Session "${sessionName}" written to "${destZipPath}" (${stats.size} bytes)`);
- } catch (err) {
- console.error('[MongoDB] extract error:', err.message);
- throw err;
- }
- }
-async delete({ session: sessionName }) {
- try {
- const file = await this._db.collection('fs.files').findOne({ filename: sessionName });
- if (file) {
- await this._bucket.delete(file._id);
- }
- console.log(`[MongoDB] Session "${sessionName}" deleted ✓`);
- } catch (err) {
- console.error('[MongoDB] delete error:', err.message);
- }
- }
- 
- // Zip an entire directory into a Buffer
- _zipDirectory(dirPath) {
- return new Promise((resolve, reject) => {
- const chunks = [];
- const archive = archiver('zip', { zlib: { level: 6 } });
- archive.on('data', (chunk) => chunks.push(chunk));
- archive.on('end', () => resolve(Buffer.concat(chunks)));
- archive.on('error', reject);
- archive.directory(dirPath, false);
- archive.finalize();
- });
- }
+  constructor() {
+    this._client = null;
+    this._db     = null;
+    this._bucket = null;
+  }
+
+  async init() {
+    this._client = new MongoClient(MONGODB_URI, {
+      serverSelectionTimeoutMS: 10_000,
+      connectTimeoutMS:         10_000,
+    });
+    await this._client.connect();
+    this._db = this._client.db('whatsapp_bot');
+    const { GridFSBucket } = await import('mongodb');
+    this._bucket = new GridFSBucket(this._db);
+    console.log('[MongoDB] Connected — GridFS ready ✓');
+  }
+
+  async close() {
+    if (this._client) await this._client.close();
+  }
+
+  async sessionExists({ session }) {
+    try {
+      const file   = await this._db.collection('fs.files').findOne({ filename: session });
+      const exists = !!file;
+      console.log(`[MongoDB] sessionExists("${session}") → ${exists}`);
+      return exists;
+    } catch (err) {
+      console.error('[MongoDB] sessionExists error:', err.message);
+      return false;
+    }
+  }
+
+  async save({ session: sessionDir }) {
+    const sessionName = path.basename(sessionDir);
+    console.log(`[MongoDB] save() — zipping directory: "${sessionDir}"`);
+    try {
+      if (!fs.existsSync(sessionDir)) {
+        const alt = path.join(AUTH_DIR, sessionName);
+        if (fs.existsSync(alt)) {
+          console.log(`[MongoDB] Resolved session dir to: "${alt}"`);
+          sessionDir = alt;
+        } else {
+          throw new Error(`Session directory not found: "${sessionDir}" or "${alt}"`);
+        }
+      }
+      const zipBuffer = await this._zipDirectory(sessionDir);
+
+      try {
+        const oldFile = await this._db.collection('fs.files').findOne({ filename: sessionName });
+        if (oldFile) {
+          await this._bucket.delete(oldFile._id);
+          console.log('[MongoDB] Deleted old session file');
+        }
+      } catch {}
+
+      await new Promise((resolve, reject) => {
+        const uploadStream = this._bucket.openUploadStream(sessionName);
+        uploadStream.on('error', reject);
+        uploadStream.on('finish', resolve);
+        uploadStream.end(zipBuffer);
+      });
+
+      console.log(`✅ [MongoDB] Session "${sessionName}" saved (${zipBuffer.length} bytes)`);
+    } catch (err) {
+      console.error('[MongoDB] save error:', err.message);
+      throw err;
+    }
+  }
+
+  async extract({ session: sessionName, path: destZipPath }) {
+    console.log(`[MongoDB] extract() — writing zip to: "${destZipPath}"`);
+    try {
+      const file = await this._db.collection('fs.files').findOne({ filename: sessionName });
+      if (!file) throw new Error(`Session "${sessionName}" not found in MongoDB`);
+
+      const destDir = path.dirname(destZipPath);
+      if (!fs.existsSync(destDir)) fs.mkdirSync(destDir, { recursive: true });
+
+      await new Promise((resolve, reject) => {
+        const downloadStream = this._bucket.openDownloadStream(file._id);
+        const writeStream    = fs.createWriteStream(destZipPath);
+        downloadStream.on('error', reject);
+        writeStream.on('error', reject);
+        writeStream.on('finish', resolve);
+        downloadStream.pipe(writeStream);
+      });
+
+      const stats = fs.statSync(destZipPath);
+      console.log(`✅ [MongoDB] Session "${sessionName}" written to "${destZipPath}" (${stats.size} bytes)`);
+    } catch (err) {
+      console.error('[MongoDB] extract error:', err.message);
+      throw err;
+    }
+  }
+
+  async delete({ session: sessionName }) {
+    try {
+      const file = await this._db.collection('fs.files').findOne({ filename: sessionName });
+      if (file) await this._bucket.delete(file._id);
+      console.log(`[MongoDB] Session "${sessionName}" deleted ✓`);
+    } catch (err) {
+      console.error('[MongoDB] delete error:', err.message);
+    }
+  }
+
+  _zipDirectory(dirPath) {
+    return new Promise((resolve, reject) => {
+      const chunks  = [];
+      const archive = archiver('zip', { zlib: { level: 6 } });
+      archive.on('data',  (chunk) => chunks.push(chunk));
+      archive.on('end',   ()      => resolve(Buffer.concat(chunks)));
+      archive.on('error', reject);
+      archive.directory(dirPath, false);
+      archive.finalize();
+    });
+  }
 }
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
@@ -183,6 +178,7 @@ function detectChromium() {
     '/usr/bin/chromium',
     '/usr/bin/chromium-browser',
   ].filter(Boolean);
+
   for (const p of candidates) {
     try {
       if (fs.existsSync(p)) {
@@ -193,6 +189,45 @@ function detectChromium() {
       }
     } catch {}
   }
+}
+
+// Safe kill — uses spawnSync so it never throws even when no process is found
+function killChromium() {
+  const targets = ['chromium', 'chrome', 'Chromium', 'Chrome'];
+  let killed = false;
+  for (const name of targets) {
+    const result = spawnSync('pkill', ['-9', '-f', name], { encoding: 'utf8' });
+    if (result.status === 0) {
+      console.log(`🔪 Killed stale process: ${name}`);
+      killed = true;
+    }
+    // status 1 = nothing to kill — that is perfectly fine, no log noise
+  }
+  if (!killed) console.log('✅ No stale browser processes found');
+}
+
+function removeChromeLocks(profileDir) {
+  if (!fs.existsSync(profileDir)) return;
+  const lockFiles = [
+    'SingletonLock',
+    'SingletonSocket',
+    'SingletonCookie',
+    'lockfile',
+  ];
+  let removedAny = false;
+  for (const file of lockFiles) {
+    try {
+      const p = path.join(profileDir, file);
+      if (fs.existsSync(p)) {
+        fs.rmSync(p, { force: true });
+        console.log(`🗑️  Removed lock file: ${file}`);
+        removedAny = true;
+      }
+    } catch (err) {
+      console.error(`⚠️  Failed removing ${file}:`, err.message);
+    }
+  }
+  if (!removedAny) console.log('✅ No lock files found in profile dir');
 }
 
 function buildPuppeteerOptions() {
@@ -235,47 +270,59 @@ async function initWhatsAppClient() {
   detectChromium();
   ensureAuthDir();
 
-  const profileDir = path.join(
-  AUTH_DIR,
-  `RemoteAuth-${CLIENT_ID}`
-  );
+  const profileDir = path.join(AUTH_DIR, `RemoteAuth-${CLIENT_ID}`);
+  const sessionKey = `RemoteAuth-${CLIENT_ID}`;
+  const zipPath    = path.join(AUTH_DIR, `${sessionKey}.zip`);
 
-  console.log("📂 Profile:", profileDir);
+  console.log('📂 Profile dir:', profileDir);
 
+  // ── Step 1: kill any Chromium left over from the previous container ──────────
+  console.log('🔪 Step 1: killing stale browser processes...');
+  killChromium();
+
+  // ── Step 2: if profile dir doesn't exist, pre-extract from MongoDB so that
+  //    lock files are present and we can clean them before Puppeteer starts ────
+  if (!fs.existsSync(profileDir) && store) {
+    const hasSession = await store.sessionExists({ session: sessionKey });
+    if (hasSession) {
+      console.log('📦 Step 2: pre-extracting session from MongoDB...');
+      try {
+        await store.extract({ session: sessionKey, path: zipPath });
+        // Unzip into the profile dir manually
+        fs.mkdirSync(profileDir, { recursive: true });
+        execSync(`unzip -o "${zipPath}" -d "${profileDir}"`, { stdio: 'pipe' });
+        console.log('📂 Session pre-extracted into profile dir ✓');
+        // Clean up the zip — RemoteAuth will re-create it as needed
+        try { fs.rmSync(zipPath, { force: true }); } catch {}
+      } catch (err) {
+        console.warn('⚠️  Pre-extract failed — RemoteAuth will handle it:', err.message);
+      }
+    } else {
+      console.log('ℹ️  Step 2: no session in MongoDB — skipping pre-extract (QR needed)');
+    }
+  } else if (fs.existsSync(profileDir)) {
+    console.log('📂 Step 2: profile dir already exists — skipping pre-extract');
+  }
+
+  // ── Step 3: remove stale Chrome lock files from the profile dir ─────────────
+  console.log('🗑️  Step 3: removing lock files...');
+  removeChromeLocks(profileDir);
+
+  // Log what's in the profile for debugging
   if (fs.existsSync(profileDir)) {
-    console.log("📂 Existing profile detected");
-
-  try {
-        console.log(
-        "Files:",
-        fs.readdirSync(profileDir)
-        );
+    try {
+      const files = fs.readdirSync(profileDir);
+      console.log(`📋 Profile contents (${files.length} items):`, files.slice(0, 20));
     } catch {}
   }
 
-  removeChromeLocks(profileDir);
-
-  try {
-  execSync("pkill -9 -f chromium", { stdio: "ignore" });
-} catch {
-    console.log("⚠️ Chromium cleanup skipped");
-}
-
-  try {
-    execSync("pkill -9 -f chrome", { stdio: "ignore" });
-  } catch {
-     console.log("⚠️ Chrome cleanup skipped");
-  }
-
-  console.log("✅ Chromium cleanup completed");
-
- 
-  
+  // ── Step 4: create and initialise the WhatsApp client ───────────────────────
+  console.log('⚙️  Step 4: creating WhatsApp client...');
   client = new Client({
     authStrategy: new RemoteAuth({
       clientId:             CLIENT_ID,
       store,
-      backupSyncIntervalMs: 60_000,   // backup every 60s once connected
+      backupSyncIntervalMs: 60_000,
       dataPath:             AUTH_DIR,
     }),
     puppeteer:          buildPuppeteerOptions(),
@@ -303,7 +350,7 @@ async function initWhatsAppClient() {
     clientReady  = true;
     qrValue      = null;
     initializing = false;
-    console.log('🤖 WhatsApp client READY — no QR needed next deploy');
+    console.log('🤖 WhatsApp client READY — session restored, no QR needed');
   });
 
   client.on('auth_failure', (msg) => {
@@ -320,13 +367,24 @@ async function initWhatsAppClient() {
     console.log('♻️  Re-initializing in 15s...');
     setTimeout(() => initWhatsAppClient(), 15_000);
   });
-  
+
   try {
-    console.log('⚙️  client.initialize()...');
+    console.log('⚙️  client.initialize() — starting Puppeteer...');
     await client.initialize();
   } catch (err) {
     console.error('❌ client.initialize() failed:', err.message);
     initializing = false;
+
+    // Self-healing: if it's a stale lock error, kill + clean + retry once
+    if (err.message.includes('already running') || err.message.includes('userDataDir')) {
+      console.log('🔁 Stale browser lock detected — cleaning up and retrying in 8s...');
+      killChromium();
+      removeChromeLocks(profileDir);
+      setTimeout(() => {
+        initializing = false;
+        initWhatsAppClient();
+      }, 8_000);
+    }
   }
 }
 
@@ -341,9 +399,9 @@ async function boot() {
     const hasSession = await store.sessionExists({ session: sessionKey });
 
     if (hasSession) {
-      console.log('🔄 Session found in MongoDB — restoring automatically, no QR needed');
+      console.log('🔄 Session found in MongoDB — will restore automatically, no QR needed');
     } else {
-      console.log('🆕 No session found — QR scan required for first login');
+      console.log('🆕 No session found — QR scan required on first login');
     }
 
     await initWhatsAppClient();
@@ -509,7 +567,6 @@ app.get('/debug/session', async (_req, res) => {
   }
 });
 
-// Enqueue a message — returns immediately with position + id
 app.post('/whatsapp/send', (req, res) => {
   if (WHATSAPP_API_PASSWORD && req.headers['x-password'] !== WHATSAPP_API_PASSWORD)
     return res.status(401).json({ ok: false, error: 'Invalid password' });
@@ -527,7 +584,6 @@ app.post('/whatsapp/send', (req, res) => {
   return res.json({ ok: true, queued: true, id, position, queueSize: messageQueue.length });
 });
 
-// Queue status endpoint
 app.get('/whatsapp/queue/status', (_req, res) => {
   res.json({
     ok:        true,
@@ -537,7 +593,7 @@ app.get('/whatsapp/queue/status', (_req, res) => {
   });
 });
 
-// ─── Queue Processor ─────────────────────────────────────────────────────────
+// ─── Queue Processor ──────────────────────────────────────────────────────────
 function startQueueProcessor() {
   if (queueRunning) return;
   queueRunning = true;
@@ -550,49 +606,23 @@ function startQueueProcessor() {
       return;
     }
 
-    // Drain the whole queue in this tick, one message per second
     const batch = messageQueue.splice(0, messageQueue.length);
     console.log(`📤 [Queue] Processing ${batch.length} message(s)...`);
 
-    for (const { id, phone, message } of batch) {
+    for (let i = 0; i < batch.length; i++) {
+      const { id, phone, message } = batch[i];
       try {
         await client.sendMessage(`${phone}@c.us`, message, { sendSeen: false });
         console.log(`✅ [Queue] Sent id=${id} → ${phone}`);
       } catch (err) {
         console.error(`❌ [Queue] Failed id=${id} → ${phone}:`, err.message);
-        // Re-enqueue at front so it retries next tick
         messageQueue.unshift({ id, phone, message, queuedAt: new Date(), retried: true });
         console.warn(`↩️  [Queue] Re-queued id=${id} for retry`);
       }
-      // Small delay between sends to avoid WhatsApp rate-limiting
-      if (batch.indexOf({ id, phone, message }) < batch.length - 1)
+      if (i < batch.length - 1)
         await new Promise(r => setTimeout(r, SEND_DELAY_MS));
     }
   }, QUEUE_INTERVAL);
-}
-
-// ──── remove Chrome Locks ────────────────────────────────────────────────────────────────────
-
-function removeChromeLocks(profileDir) {
-  const files = [
-    "SingletonLock",
-    "SingletonSocket",
-    "SingletonCookie",
-    "lockfile"
-  ];
-
-  for (const file of files) {
-    try {
-      const p = path.join(profileDir, file);
-
-      if (fs.existsSync(p)) {
-        fs.rmSync(p, { force: true });
-        console.log(`🗑️ Removed ${file}`);
-      }
-    } catch (err) {
-      console.error(`Failed removing ${file}`, err.message);
-    }
-  }
 }
 
 // ─── Start ────────────────────────────────────────────────────────────────────

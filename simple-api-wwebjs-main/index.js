@@ -235,13 +235,41 @@ async function initWhatsAppClient() {
   detectChromium();
   ensureAuthDir();
 
+  const profileDir = path.join(
+  AUTH_DIR,
+  `RemoteAuth-${CLIENT_ID}`
+  );
+
+  console.log("📂 Profile:", profileDir);
+
+  if (fs.existsSync(profileDir)) {
+    console.log("📂 Existing profile detected");
+
   try {
-    execSync("pkill -f chromium || true");
-    execSync("pkill -f chrome || true");
-    console.log("✅ Old Chromium processes cleaned");
-  } catch (err) {
-    console.log("⚠️ Chromium cleanup skipped");
+        console.log(
+        "Files:",
+        fs.readdirSync(profileDir)
+        );
+    } catch {}
   }
+
+  removeChromeLocks(profileDir);
+
+  try {
+  execSync("pkill -9 -f chromium", { stdio: "ignore" });
+} catch {
+    console.log("⚠️ Chromium cleanup skipped");
+}
+
+  try {
+    execSync("pkill -9 -f chrome", { stdio: "ignore" });
+  } catch {
+     console.log("⚠️ Chrome cleanup skipped");
+  }
+
+  console.log("✅ Chromium cleanup completed");
+
+ 
   
   client = new Client({
     authStrategy: new RemoteAuth({
@@ -292,16 +320,7 @@ async function initWhatsAppClient() {
     console.log('♻️  Re-initializing in 15s...');
     setTimeout(() => initWhatsAppClient(), 15_000);
   });
-  const profileDir = "/app/.wwebjs_auth/RemoteAuth-primary";
-
-  if (fs.existsSync(profileDir)) {
-    console.log("🗑️ Removing stale local profile");
-
-    fs.rmSync(profileDir, {
-      recursive: true,
-      force: true
-      });
-    }
+  
   try {
     console.log('⚙️  client.initialize()...');
     await client.initialize();
@@ -553,23 +572,25 @@ function startQueueProcessor() {
 }
 
 // ──── remove Chrome Locks ────────────────────────────────────────────────────────────────────
+
 function removeChromeLocks(profileDir) {
   const files = [
     "SingletonLock",
     "SingletonSocket",
-    "SingletonCookie"
+    "SingletonCookie",
+    "lockfile"
   ];
 
   for (const file of files) {
-    const p = path.join(profileDir, file);
-
     try {
+      const p = path.join(profileDir, file);
+
       if (fs.existsSync(p)) {
         fs.rmSync(p, { force: true });
         console.log(`🗑️ Removed ${file}`);
       }
     } catch (err) {
-      console.error(`Failed removing ${file}`, err);
+      console.error(`Failed removing ${file}`, err.message);
     }
   }
 }

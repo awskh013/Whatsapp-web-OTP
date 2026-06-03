@@ -8,6 +8,7 @@ import qr2 from 'qrcode';
 import fs from 'fs';
 import path from 'path';
 import { spawnSync } from 'child_process';
+import { execSync } from "child_process";
 
 dotenv.config();
 
@@ -234,6 +235,14 @@ async function initWhatsAppClient() {
   detectChromium();
   ensureAuthDir();
 
+  try {
+    execSync("pkill -f chromium || true");
+    execSync("pkill -f chrome || true");
+    console.log("✅ Old Chromium processes cleaned");
+  } catch (err) {
+    console.log("⚠️ Chromium cleanup skipped");
+  }
+  
   client = new Client({
     authStrategy: new RemoteAuth({
       clientId:             CLIENT_ID,
@@ -283,7 +292,16 @@ async function initWhatsAppClient() {
     console.log('♻️  Re-initializing in 15s...');
     setTimeout(() => initWhatsAppClient(), 15_000);
   });
+  const profileDir = "/app/.wwebjs_auth/RemoteAuth-primary";
 
+  if (fs.existsSync(profileDir)) {
+    console.log("🗑️ Removing stale local profile");
+
+    fs.rmSync(profileDir, {
+      recursive: true,
+      force: true
+      });
+    }
   try {
     console.log('⚙️  client.initialize()...');
     await client.initialize();
@@ -532,6 +550,28 @@ function startQueueProcessor() {
         await new Promise(r => setTimeout(r, SEND_DELAY_MS));
     }
   }, QUEUE_INTERVAL);
+}
+
+// ──── remove Chrome Locks ────────────────────────────────────────────────────────────────────
+function removeChromeLocks(profileDir) {
+  const files = [
+    "SingletonLock",
+    "SingletonSocket",
+    "SingletonCookie"
+  ];
+
+  for (const file of files) {
+    const p = path.join(profileDir, file);
+
+    try {
+      if (fs.existsSync(p)) {
+        fs.rmSync(p, { force: true });
+        console.log(`🗑️ Removed ${file}`);
+      }
+    } catch (err) {
+      console.error(`Failed removing ${file}`, err);
+    }
+  }
 }
 
 // ─── Start ────────────────────────────────────────────────────────────────────

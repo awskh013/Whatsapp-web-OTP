@@ -28,9 +28,7 @@ class MongoStore {
   async sessionExists({ session }) {
     try {
       const files = await this._db.collection('fs.files').findOne({ filename: session });
-      const exists = !!files;
-      console.log(`[MongoDB] sessionExists("${session}") → ${exists}`);
-      return exists;
+      return !!files;
     } catch (err) {
       return false;
     }
@@ -38,28 +36,48 @@ class MongoStore {
 
   async save({ session: sessionDir }) {
     const sessionName = path.basename(sessionDir);
-    console.log(`[MongoDB] save() — zipping directory: "${sessionDir}"`);
+    console.log(`[MongoDB] save() — archiving directory: "${sessionDir}"`);
     try {
       if (!fs.existsSync(sessionDir)) {
         const alt = path.join(AUTH_DIR, sessionName);
         if (fs.existsSync(alt)) sessionDir = alt;
         else throw new Error(`Session directory not found: "${sessionDir}"`);
       }
-      
-      const zipBuffer = await this._zipDirectory(sessionDir);
-      
+
+      // حذف الجلسة القديمة قبل رفع الجديدة
       try {
         const oldFile = await this._db.collection('fs.files').findOne({ filename: sessionName });
         if (oldFile) await this._bucket.delete(oldFile._id);
       } catch {}
-      
+
+      // الربط المباشر (Pipe) لتجنب امتلاء الذاكرة وتلف الملف
       await new Promise((resolve, reject) => {
         const uploadStream = this._bucket.openUploadStream(sessionName);
+        const archive = archiver('zip', { zlib: { level: 6 } });
+
         uploadStream.on('error', reject);
-        uploadStream.on('finish', resolve);
-        uploadStream.end(zipBuffer);
+        uploadStream.on('finish', resolve); // يتم استدعاؤها فقط بعد إغلاق الملف بأمان في الداتابيز
+        archive.on('error', reject);
+
+        archive.pipe(uploadStream); // تمرير البيانات مباشرة إلى MongoDB
+
+        // استخدام directory لجلب جميع الملفات بما فيها المخفية، واستثناء الأقفال
+        archive.directory(sessionDir, false, (data) => {
+          const file = data.name;
+          if (
+            file.includes('SingletonLock') ||
+            file.includes('SingletonCookie') ||
+            file.includes('SingletonSocket')
+          ) {
+            return false; // تجاهل ملفات القفل
+          }
+          return data;
+        });
+
+        archive.finalize();
       });
-      console.log(`✅ [MongoDB] Session "${sessionName}" saved (${zipBuffer.length} bytes)`);
+
+      console.log(`✅ [MongoDB] Session "${sessionName}" saved to GridFS successfully`);
     } catch (err) {
       console.error('[MongoDB] save error:', err.message);
       throw err;
@@ -71,18 +89,18 @@ class MongoStore {
     try {
       const file = await this._db.collection('fs.files').findOne({ filename: sessionName });
       if (!file) throw new Error(`Session "${sessionName}" not found`);
-      
+
       const destDir = path.dirname(destZipPath);
       if (!fs.existsSync(destDir)) fs.mkdirSync(destDir, { recursive: true });
-      
+
       const downloadStream = this._bucket.openDownloadStream(file._id);
       const writeStream = fs.createWriteStream(destZipPath);
-      
-      // استخدام pipeline يضمن إغلاق الملف بنسبة 100% قبل المتابعة
+
+      // pipeline يضمن عدم استكمال الكود إلا بعد اكتمال كتابة الملف على القرص
       await pipeline(downloadStream, writeStream);
-      
+
       const stats = fs.statSync(destZipPath);
-      console.log(`✅ [MongoDB] Session written successfully (${stats.size} bytes)`);
+      console.log(`✅ [MongoDB] Session "${sessionName}" written to "${destZipPath}" (${stats.size} bytes)`);
     } catch (err) {
       console.error('[MongoDB] extract error:', err.message);
       throw err;
@@ -95,27 +113,5 @@ class MongoStore {
       if (file) await this._bucket.delete(file._id);
       console.log(`[MongoDB] Session "${sessionName}" deleted ✓`);
     } catch (err) {}
-  }
-  
-  _zipDirectory(dirPath) {
-    return new Promise((resolve, reject) => {
-      const chunks = [];
-      const archive = archiver('zip', { zlib: { level: 6 } });
-      archive.on('data', (chunk) => chunks.push(chunk));
-      archive.on('end', () => resolve(Buffer.concat(chunks)));
-      archive.on('error', reject);
-      
-      // [الحل السحري هنا] استثناء ملفات القفل لمنع حفظها في الداتابيز
-      archive.glob('**/*', {
-        cwd: dirPath,
-        ignore: [
-          'SingletonLock',
-          'session/SingletonLock',
-          'SingletonCookie',
-          'SingletonSocket'
-        ]
-      });
-      archive.finalize();
-    });
   }
 }

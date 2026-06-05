@@ -214,7 +214,7 @@ function buildPuppeteerOptions() {
   const opts = {
     headless: true,
     protocolTimeout: 180_000,
-    userDataDir: path.join(process.cwd(), AUTH_DIR, 'chrome_data'),
+
     args: [
       '--no-sandbox',
       '--disable-setuid-sandbox',
@@ -247,6 +247,22 @@ function buildPuppeteerOptions() {
 async function initWhatsAppClient() {
   if (initializing) return;
   initializing = true;
+
+  const lockFiles = [
+    path.join(process.cwd(), AUTH_DIR, 'SingletonLock'),
+    path.join(process.cwd(), AUTH_DIR, 'session', 'SingletonLock')
+  ];
+
+  for (const file of lockFiles) {
+    if (fs.existsSync(file)) {
+      try {
+        fs.unlinkSync(file);
+        console.log(`🧹 Removed lock file: ${file}`);
+      } catch (e) {
+        console.warn(`⚠️ Could not remove lock file: ${file}`);
+      }
+    }
+  }
 
   detectChromium();
   // لا تقم بإنشاء المجلد هنا، دالة boot قامت بذلك

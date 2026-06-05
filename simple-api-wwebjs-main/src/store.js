@@ -49,29 +49,26 @@ class MongoStore {
  throw err;
  }
  }
- async extract({ session: sessionKey, path: destPath }) {
- try {
- const doc = await this._col.findOne({ session_name: sessionKey });
- if (!doc) throw new Error(`Session "${sessionKey}" not found in MongoDB`);
- 
- const raw = doc.zip_data;
- let buf;
- if (Buffer.isBuffer(raw)) buf = raw;
- else if (raw && Buffer.isBuffer(raw.buffer)) buf = raw.buffer;
- else if (raw && typeof raw.value === 'function') buf = Buffer.from(raw.value(), 'binary');
- else buf = Buffer.from(raw);
- 
- const destDir = path.dirname(destPath);
- if (!fs.existsSync(destDir)) fs.mkdirSync(destDir, { recursive: true });
- 
- // Unzip to destination
- await this._unzipBuffer(buf, destDir);
- console.log(`[MongoDB] Session "${sessionKey}" extracted → ${destDir} ✓ (${buf.length} bytes)`);
- } catch (err) {
- console.error('[MongoDB] extract error:', err.message);
- throw err;
- }
- }
+ async extract({ session: sessionName, path: destZipPath }) {
+  try {
+    const file = await this._db.collection('fs.files').findOne({ filename: sessionName });
+    if (!file) throw new Error(`Session "${sessionName}" not found`);
+
+    const destDir = path.dirname(destZipPath);
+    if (!fs.existsSync(destDir)) fs.mkdirSync(destDir, { recursive: true });
+
+    const downloadStream = this._bucket.openDownloadStream(file._id);
+    const writeStream = fs.createWriteStream(destZipPath);
+
+    // استخدام pipeline لضمان إغلاق الملف بالكامل قبل المتابعة
+    await pipeline(downloadStream, writeStream);
+    
+    console.log(`✅ File written to disk: ${destZipPath}`);
+  } catch (err) {
+    console.error('[MongoDB] extract error:', err);
+    throw err;
+  }
+}
  async delete({ session: sessionKey }) {
  try {
  await this._col.deleteOne({ session_name: sessionKey });

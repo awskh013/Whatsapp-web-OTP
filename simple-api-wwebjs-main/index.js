@@ -8,6 +8,7 @@ import qr2 from 'qrcode';
 import fs from 'fs';
 import path from 'path';
 import { spawnSync } from 'child_process';
+import { execSync } from 'child_process';
 
 dotenv.config();
 
@@ -176,6 +177,21 @@ function ensureAuthDir() {
   }
 }
 
+function cleanupStaleProcesses() {
+  try {
+    console.log('🧹 Cleaning up stale browser processes and locks...');
+    // إغلاق أي متصفح عالق
+    execSync('pkill -f chromium || true');
+    // حذف ملف القفل إذا وجد في مجلد الجلسة
+    const lockPath = path.join(process.cwd(), AUTH_DIR, 'SingletonLock');
+    if (fs.existsSync(lockPath)) {
+      fs.unlinkSync(lockPath);
+    }
+  } catch (e) {
+    console.log('🧹 Cleanup completed.');
+  }
+}
+
 function detectChromium() {
   const candidates = [
     process.env.PUPPETEER_EXECUTABLE_PATH,
@@ -198,6 +214,7 @@ function buildPuppeteerOptions() {
   const opts = {
     headless: true,
     protocolTimeout: 180_000,
+    userDataDir: path.join(process.cwd(), AUTH_DIR, 'chrome_data'),
     args: [
       '--no-sandbox',
       '--disable-setuid-sandbox',
@@ -294,6 +311,8 @@ async function initWhatsAppClient() {
 // ─── Boot ─────────────────────────────────────────────────────────────────────
 async function boot() {
   try {
+    cleanupStaleProcesses();
+    
     store = new MongoStore();
     await store.init();
     startQueueProcessor();

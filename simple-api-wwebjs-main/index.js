@@ -232,21 +232,19 @@ async function initWhatsAppClient() {
   initializing = true;
 
   detectChromium();
-  ensureAuthDir();
+  // لا تقم بإنشاء المجلد هنا، دالة boot قامت بذلك
 
   client = new Client({
     authStrategy: new RemoteAuth({
-      clientId:             CLIENT_ID,
-      store,
-      backupSyncIntervalMs: 60_000,   // backup every 60s once connected
-      dataPath:             AUTH_DIR,
+      clientId: CLIENT_ID,
+      store: store, // تأكد أن الـ store معرف هنا
+      backupSyncIntervalMs: 300_000, // رفع الفاصل الزمني للنسخ الاحتياطي (5 دقائق)
+      dataPath: AUTH_DIR,
     }),
-    puppeteer:          buildPuppeteerOptions(),
+    puppeteer: buildPuppeteerOptions(),
     takeoverOnConflict: true,
-    restartOnAuthFail:  true,
-    webVersionCache:    { type: 'none' },
   });
-
+  
   client.on('qr', (q) => {
     qrValue = q;
     const now = Date.now();

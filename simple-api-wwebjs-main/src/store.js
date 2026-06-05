@@ -21,98 +21,68 @@ class MongoStore {
     console.log('[MongoDB] Connected — GridFS ready ✓');
   }
 
-  async close() {
-    if (this._client) await this._client.close();
-  }
-
   async sessionExists({ session }) {
     try {
-      const files = await this._db.collection('fs.files').findOne({ filename: session });
-      return !!files;
-    } catch (err) {
-      return false;
-    }
+      const file = await this._db.collection('fs.files').findOne({ filename: session });
+      return !!file;
+    } catch (err) { return false; }
   }
 
   async save({ session: sessionDir }) {
     const sessionName = path.basename(sessionDir);
-    console.log(`[MongoDB] save() — Safely archiving session: "${sessionDir}"`);
-    
-    // تحديد مسار المجلد المؤقت الآمن للنسخ
     const tempDir = path.join(process.cwd(), AUTH_DIR, `temp_${sessionName}`);
     
+    console.log(`[MongoDB] save() — Archiving session: "${sessionName}"`);
+    
     try {
-      if (!fs.existsSync(sessionDir)) {
-        const alt = path.join(AUTH_DIR, sessionName);
-        if (fs.existsSync(alt)) sessionDir = alt;
-        else throw new Error(`Session directory not found: "${sessionDir}"`);
-      }
+      // 1. تنظيف ونسخ المجلد (Static Copy)
+      if (fs.existsSync(tempDir)) fs.rmSync(tempDir, { recursive: true, force: true });
+      fs.cpSync(sessionDir, tempDir, { recursive: true });
 
-      // 1. تنظيف أي بقايا للمجلد المؤقت إن وجدت
-      if (fs.existsSync(tempDir)) {
-        fs.rmSync(tempDir, { recursive: true, force: true });
-      }
-      
-      // 2. عمل نسخة طبق الأصل ثابتة (Static Copy) من الجلسة الحية لتجنب تداخل المتصفح
-      fs.cpSync(sessionDir, tempDir, { recursive: true, force: true });
-
-      // 3. تنظيف ملفات القفل والكاش من النسخة المؤقتة لضمان سلامة الـ ZIP وتقليل الحجم
-      const itemsToDelete = [
-        path.join(tempDir, 'SingletonLock'),
-        path.join(tempDir, 'SingletonCookie'),
-        path.join(tempDir, 'SingletonSocket'),
-        path.join(tempDir, 'session', 'SingletonLock'),
-        path.join(tempDir, 'Default', 'Cache'),
-        path.join(tempDir, 'Default', 'Code Cache')
+      // 2. حذف الملفات التي تسبب ضخامة الحجم وتعليق المتصفح
+      const toDelete = [
+        'SingletonLock', 'SingletonCookie', 'SingletonSocket',
+        'Default/Cache', 'Default/Code Cache', 'Default/GPUCache'
       ];
-
-      itemsToDelete.forEach(item => {
-        if (fs.existsSync(item)) {
-          try {
-            fs.rmSync(item, { recursive: true, force: true });
-          } catch (e) {}
-        }
+      toDelete.forEach(p => {
+        const fullPath = path.join(tempDir, p);
+        if (fs.existsSync(fullPath)) fs.rmSync(fullPath, { recursive: true, force: true });
       });
 
-      // 4. حذف الملف القديم التالف من قاعدة البيانات
-      try {
-        const oldFile = await this._db.collection('fs.files').findOne({ filename: sessionName });
-        if (oldFile) await this._bucket.delete(oldFile._id);
-      } catch {}
+      // 3. حذف الملف القديم
+      const oldFile = await this._db.collection('fs.files').findOne({ filename: sessionName });
+      if (oldFile) await this._bucket.delete(oldFile._id);
 
-      // 5. الرفع المباشر للمجلد المؤقت المستقر تماماً
+      // 4. الرفع باستخدام Stream مع ضمان الإغلاق الكامل
       await new Promise((resolve, reject) => {
         const uploadStream = this._bucket.openUploadStream(sessionName);
-        const archive = archiver('zip', { zlib: { level: 6 } });
+        const archive = archiver('zip', { zlib: { level: 9 } }); // أقصى ضغط لتقليل الحجم
 
-        uploadStream.on('error', reject);
-        uploadStream.on('finish', resolve);
         archive.on('error', reject);
+        uploadStream.on('error', reject);
+        uploadStream.on('finish', () => {
+          console.log(`✅ [MongoDB] Session saved successfully.`);
+          resolve();
+        });
 
         archive.pipe(uploadStream);
-        archive.directory(tempDir, false); // ضغط نقي 100% بدون فلاتر برمجية معقدة
+        archive.directory(tempDir, false);
         archive.finalize();
       });
 
-      console.log(`✅ [MongoDB] Session "${sessionName}" saved cleanly and successfully to GridFS.`);
     } catch (err) {
       console.error('[MongoDB] save error:', err.message);
       throw err;
     } finally {
-      // 6. ضمان تنظيف القرص وحذف المجلد المؤقت دائماً حتى لو حدث خطأ
-      if (fs.existsSync(tempDir)) {
-        try {
-          fs.rmSync(tempDir, { recursive: true, force: true });
-        } catch (e) {}
-      }
+      if (fs.existsSync(tempDir)) fs.rmSync(tempDir, { recursive: true, force: true });
     }
   }
 
   async extract({ session: sessionName, path: destZipPath }) {
-    console.log(`[MongoDB] extract() — writing zip to: "${destZipPath}"`);
+    console.log(`[MongoDB] extract() — downloading: "${sessionName}"`);
     try {
       const file = await this._db.collection('fs.files').findOne({ filename: sessionName });
-      if (!file) throw new Error(`Session "${sessionName}" not found`);
+      if (!file) throw new Error('Session not found');
 
       const destDir = path.dirname(destZipPath);
       if (!fs.existsSync(destDir)) fs.mkdirSync(destDir, { recursive: true });
@@ -120,22 +90,22 @@ class MongoStore {
       const downloadStream = this._bucket.openDownloadStream(file._id);
       const writeStream = fs.createWriteStream(destZipPath);
 
-      // pipeline تضمن اكتمال الكتابة على القرص وإغلاق الملف تماماً قبل المتابعة
+      // استخدام pipeline مع التأكد من إفراغ الذاكرة المؤقتة للقرص (Flash to disk)
       await pipeline(downloadStream, writeStream);
+      
+      // [إضافة حاسمة] التأكد من أن نظام التشغيل أغلق الملف تماماً
+      const fd = fs.openSync(destZipPath, 'r+');
+      fs.fsyncSync(fd);
+      fs.closeSync(fd);
+
+      // انتظار بسيط جداً لضمان استقرار الملف قبل أن تقرأه مكتبة الواتساب
+      await new Promise(r => setTimeout(r, 1000));
 
       const stats = fs.statSync(destZipPath);
-      console.log(`✅ [MongoDB] Session "${sessionName}" written to "${destZipPath}" (${stats.size} bytes)`);
+      console.log(`✅ [MongoDB] File extracted: ${stats.size} bytes`);
     } catch (err) {
       console.error('[MongoDB] extract error:', err.message);
       throw err;
     }
-  }
-
-  async delete({ session: sessionName }) {
-    try {
-      const file = await this._db.collection('fs.files').findOne({ filename: sessionName });
-      if (file) await this._bucket.delete(file._id);
-      console.log(`[MongoDB] Session "${sessionName}" deleted ✓`);
-    } catch (err) {}
   }
 }

@@ -9,6 +9,7 @@ import fs from 'fs';
 import path from 'path';
 import { spawnSync } from 'child_process';
 import { execSync } from 'child_process';
+import { pipeline } from 'stream/promises';
 
 dotenv.config();
 
@@ -180,16 +181,15 @@ function ensureAuthDir() {
 function cleanupStaleProcesses() {
   try {
     console.log('🧹 Cleaning up stale browser processes and locks...');
-    // إغلاق أي متصفح عالق
-    execSync('pkill -f chromium || true');
-    // حذف ملف القفل إذا وجد في مجلد الجلسة
-    const lockPath = path.join(process.cwd(), AUTH_DIR, 'SingletonLock');
-    if (fs.existsSync(lockPath)) {
-      fs.unlinkSync(lockPath);
-    }
-  } catch (e) {
-    console.log('🧹 Cleanup completed.');
-  }
+    execSync('pkill -f chromium || true'); // إغلاق أي متصفح عالق
+
+    // تنظيف الأقفال المحلية إن وجدت
+    const lockFiles = [
+      path.join(process.cwd(), AUTH_DIR, 'SingletonLock'),
+      path.join(process.cwd(), AUTH_DIR, 'session', 'SingletonLock')
+    ];
+    lockFiles.forEach(f => { if (fs.existsSync(f)) fs.unlinkSync(f); });
+  } catch (e) {}
 }
 
 function detectChromium() {
@@ -276,6 +276,8 @@ async function initWhatsAppClient() {
     }),
     puppeteer: buildPuppeteerOptions(),
     takeoverOnConflict: true,
+    restartOnAuthFail: true,
+    webVersionCache: { type: 'none' },
   });
   
   client.on('qr', (q) => {
@@ -324,8 +326,13 @@ async function initWhatsAppClient() {
   }
 }
 
+let isBooting = false;
 // ─── Boot ─────────────────────────────────────────────────────────────────────
 async function boot() {
+
+  if (isBooting) return;
+  isBooting = true;
+  
   try {
     cleanupStaleProcesses();
     
@@ -339,25 +346,29 @@ async function boot() {
     if (hasSession) {
       console.log('🔄 Session found — Restoring...');
       // 1. تحديد مسار الملف المؤقت
-      const destZipPath = path.join(AUTH_DIR, `${sessionKey}.zip`);
+      // const destZipPath = path.join(AUTH_DIR, `${sessionKey}.zip`);
       
       // 2. تنظيف المجلد قبل الاستخراج لتجنب الملفات التالفة
-      if (fs.existsSync(AUTH_DIR)) {
-        fs.rmSync(AUTH_DIR, { recursive: true, force: true });
-      }
-      fs.mkdirSync(AUTH_DIR, { recursive: true });
+      // if (fs.existsSync(AUTH_DIR)) {
+      //   fs.rmSync(AUTH_DIR, { recursive: true, force: true });
+      // }
+      // fs.mkdirSync(AUTH_DIR, { recursive: true });
 
-      // 3. سحب الجلسة من MongoDB
-      await store.extract({ session: sessionKey, path: destZipPath });
+      // // 3. سحب الجلسة من MongoDB
+      // await store.extract({ session: sessionKey, path: destZipPath });
       
-      // 4. تأخير بسيط جداً لضمان استقرار الكتابة على القرص
-      await new Promise(resolve => setTimeout(resolve, 1000));
-      console.log('✅ Session ready for initialization.');
+      // // 4. تأخير بسيط جداً لضمان استقرار الكتابة على القرص
+      // await new Promise(resolve => setTimeout(resolve, 1000));
+      // console.log('✅ Session ready for initialization.');
+    } else {
+      console.log('🆕 No session found — QR scan required for first login');
     }
 
     await initWhatsAppClient();
+    isBooting = false;
   } catch (err) {
     console.error('❌ boot() failed:', err.message);
+    console.log('♻️  Retrying in 20s...');
     setTimeout(() => boot(), 20_000);
   }
 }

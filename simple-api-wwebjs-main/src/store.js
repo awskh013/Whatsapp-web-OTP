@@ -36,7 +36,11 @@ class MongoStore {
 
   async save({ session: sessionDir }) {
     const sessionName = path.basename(sessionDir);
-    console.log(`[MongoDB] save() — archiving directory: "${sessionDir}"`);
+    console.log(`[MongoDB] save() — Safely archiving session: "${sessionDir}"`);
+    
+    // تحديد مسار المجلد المؤقت الآمن للنسخ
+    const tempDir = path.join(process.cwd(), AUTH_DIR, `temp_${sessionName}`);
+    
     try {
       if (!fs.existsSync(sessionDir)) {
         const alt = path.join(AUTH_DIR, sessionName);
@@ -44,43 +48,63 @@ class MongoStore {
         else throw new Error(`Session directory not found: "${sessionDir}"`);
       }
 
-      // حذف الجلسة القديمة قبل رفع الجديدة
+      // 1. تنظيف أي بقايا للمجلد المؤقت إن وجدت
+      if (fs.existsSync(tempDir)) {
+        fs.rmSync(tempDir, { recursive: true, force: true });
+      }
+      
+      // 2. عمل نسخة طبق الأصل ثابتة (Static Copy) من الجلسة الحية لتجنب تداخل المتصفح
+      fs.cpSync(sessionDir, tempDir, { recursive: true, force: true });
+
+      // 3. تنظيف ملفات القفل والكاش من النسخة المؤقتة لضمان سلامة الـ ZIP وتقليل الحجم
+      const itemsToDelete = [
+        path.join(tempDir, 'SingletonLock'),
+        path.join(tempDir, 'SingletonCookie'),
+        path.join(tempDir, 'SingletonSocket'),
+        path.join(tempDir, 'session', 'SingletonLock'),
+        path.join(tempDir, 'Default', 'Cache'),
+        path.join(tempDir, 'Default', 'Code Cache')
+      ];
+
+      itemsToDelete.forEach(item => {
+        if (fs.existsSync(item)) {
+          try {
+            fs.rmSync(item, { recursive: true, force: true });
+          } catch (e) {}
+        }
+      });
+
+      // 4. حذف الملف القديم التالف من قاعدة البيانات
       try {
         const oldFile = await this._db.collection('fs.files').findOne({ filename: sessionName });
         if (oldFile) await this._bucket.delete(oldFile._id);
       } catch {}
 
-      // الربط المباشر (Pipe) لتجنب امتلاء الذاكرة وتلف الملف
+      // 5. الرفع المباشر للمجلد المؤقت المستقر تماماً
       await new Promise((resolve, reject) => {
         const uploadStream = this._bucket.openUploadStream(sessionName);
         const archive = archiver('zip', { zlib: { level: 6 } });
 
         uploadStream.on('error', reject);
-        uploadStream.on('finish', resolve); // يتم استدعاؤها فقط بعد إغلاق الملف بأمان في الداتابيز
+        uploadStream.on('finish', resolve);
         archive.on('error', reject);
 
-        archive.pipe(uploadStream); // تمرير البيانات مباشرة إلى MongoDB
-
-        // استخدام directory لجلب جميع الملفات بما فيها المخفية، واستثناء الأقفال
-        archive.directory(sessionDir, false, (data) => {
-          const file = data.name;
-          if (
-            file.includes('SingletonLock') ||
-            file.includes('SingletonCookie') ||
-            file.includes('SingletonSocket')
-          ) {
-            return false; // تجاهل ملفات القفل
-          }
-          return data;
-        });
-
+        archive.pipe(uploadStream);
+        archive.directory(tempDir, false); // ضغط نقي 100% بدون فلاتر برمجية معقدة
         archive.finalize();
       });
 
-      console.log(`✅ [MongoDB] Session "${sessionName}" saved to GridFS successfully`);
+      console.log(`✅ [MongoDB] Session "${sessionName}" saved cleanly and successfully to GridFS.`);
     } catch (err) {
       console.error('[MongoDB] save error:', err.message);
       throw err;
+    } finally {
+      // 6. ضمان تنظيف القرص وحذف المجلد المؤقت دائماً حتى لو حدث خطأ
+      if (fs.existsSync(tempDir)) {
+        try {
+          fs.rmSync(tempDir, { recursive: true, force: true });
+        } catch (e) {}
+      }
     }
   }
 
@@ -96,7 +120,7 @@ class MongoStore {
       const downloadStream = this._bucket.openDownloadStream(file._id);
       const writeStream = fs.createWriteStream(destZipPath);
 
-      // pipeline يضمن عدم استكمال الكود إلا بعد اكتمال كتابة الملف على القرص
+      // pipeline تضمن اكتمال الكتابة على القرص وإغلاق الملف تماماً قبل المتابعة
       await pipeline(downloadStream, writeStream);
 
       const stats = fs.statSync(destZipPath);

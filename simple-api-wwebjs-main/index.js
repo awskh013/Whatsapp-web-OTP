@@ -304,15 +304,27 @@ async function boot() {
     const hasSession = await store.sessionExists({ session: sessionKey });
 
     if (hasSession) {
-      console.log('🔄 Session found in MongoDB — restoring automatically, no QR needed');
-    } else {
-      console.log('🆕 No session found — QR scan required for first login');
+      console.log('🔄 Session found — Restoring...');
+      // 1. تحديد مسار الملف المؤقت
+      const destZipPath = path.join(AUTH_DIR, `${sessionKey}.zip`);
+      
+      // 2. تنظيف المجلد قبل الاستخراج لتجنب الملفات التالفة
+      if (fs.existsSync(AUTH_DIR)) {
+        fs.rmSync(AUTH_DIR, { recursive: true, force: true });
+      }
+      fs.mkdirSync(AUTH_DIR, { recursive: true });
+
+      // 3. سحب الجلسة من MongoDB
+      await store.extract({ session: sessionKey, path: destZipPath });
+      
+      // 4. تأخير بسيط جداً لضمان استقرار الكتابة على القرص
+      await new Promise(resolve => setTimeout(resolve, 1000));
+      console.log('✅ Session ready for initialization.');
     }
 
     await initWhatsAppClient();
   } catch (err) {
     console.error('❌ boot() failed:', err.message);
-    console.log('♻️  Retrying in 20s...');
     setTimeout(() => boot(), 20_000);
   }
 }

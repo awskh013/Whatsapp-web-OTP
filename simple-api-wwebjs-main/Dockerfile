@@ -1,9 +1,13 @@
 # ── Stage: production ──────────────────────────────────────────────────────────
 FROM node:20-slim
 
-# Install Chromium and all system libraries Puppeteer needs
+# Install Chromium, tini, and all system libraries Puppeteer needs.
+# tini is the fix for zombie processes: without a real init process at PID 1,
+# Node never reaps orphaned/defunct chromium child processes inside the
+# container, and they pile up as zombies.
 RUN apt-get update \
  && apt-get install -y --no-install-recommends \
+      tini \
       chromium \
       ca-certificates \
       fonts-liberation \
@@ -41,6 +45,7 @@ RUN apt-get update \
       lsb-release \
       wget \
       xdg-utils \
+      procps \
  && apt-get clean \
  && rm -rf /var/lib/apt/lists/*
 
@@ -53,14 +58,15 @@ WORKDIR /app
 # Copy package file
 COPY package.json ./
 
-# Install all dependencies (including optional ones needed by RemoteAuth)
+# Install all dependencies
 RUN npm install --omit=dev
-
-RUN npm install archiver
 
 # Copy source
 COPY . .
 
 EXPOSE 3000
 
+# tini as PID 1: forwards signals correctly (so SIGTERM from Render reaches
+# node) AND reaps zombie child processes that chromium leaves behind.
+ENTRYPOINT ["/usr/bin/tini", "--"]
 CMD ["node", "index.js"]

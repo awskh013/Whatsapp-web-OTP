@@ -393,6 +393,17 @@ app.get('/whatsapp/login', async (_req, res) => {
 
 app.get('/whatsapp/status', (_req, res) => res.json({ ok: true, clientReady, hasQR: !!qrValue }));
 
+app.get('/debug/reset-session', async (req, res) => {
+  if (WHATSAPP_API_PASSWORD && req.headers['x-password'] !== WHATSAPP_API_PASSWORD)
+    return res.status(401).json({ ok: false });
+  try {
+    await store.delete({ session: `RemoteAuth-${CLIENT_ID}` });
+    res.json({ ok: true, message: 'Session deleted — سيطلب QR جديد بعد أول redeploy' });
+  } catch (err) {
+    res.status(500).json({ ok: false, error: err.message });
+  }
+});
+
 app.get('/debug/session', async (_req, res) => {
   try {
     const sessionKey = `RemoteAuth-${CLIENT_ID}`;

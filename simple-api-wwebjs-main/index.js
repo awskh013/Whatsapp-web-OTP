@@ -57,7 +57,7 @@ function ensureAuthDir() {
 function cleanupStaleProcesses() {
   try {
     console.log('🧹 Cleaning up stale browser processes and locks...');
-    execSync('pkill -9 -f chrom(e|ium) || true', { stdio: 'ignore' });
+    execSync('pkill -9 -f "chrom(e|ium)" || true', { stdio: 'ignore' });
 
     const lockFiles = [
       path.join(process.cwd(), AUTH_DIR, 'SingletonLock'),

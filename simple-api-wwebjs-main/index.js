@@ -3,7 +3,7 @@ import express from 'express';
 import pkg from 'whatsapp-web.js';
 const { Client, RemoteAuth } = pkg;
 import mongoose from 'mongoose';
-import { MongoStore } from 'wwebjs-mongo';
+import { MongoStore } from './src/store.js';
 import qr2 from 'qrcode';
 import fs from 'fs';
 import path from 'path';
@@ -222,10 +222,10 @@ async function boot() {
     // save/extract/exists calling convention exactly, unlike a hand-rolled
     // GridFS store. It needs a live mongoose connection, not a bare
     // MongoClient.
-    await mongoose.connect(MONGODB_URI, { dbName: 'whatsapp_bot' });
+    store = new MongoStore();
+    await store.init(); // بيعمل الاتصال بـ MongoClient + GridFSBucket لوحده
     console.log('✅ Connected to MongoDB (mongoose)');
-    store = new MongoStore({ mongoose });
-
+    
     startQueueProcessor();
     await initWhatsAppClient();
   } catch (err) {

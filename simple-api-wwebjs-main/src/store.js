@@ -34,9 +34,15 @@ export class MongoStore {
     }
   }
 
-  async save({ session: sessionDir }) {
-    const sessionName = path.basename(sessionDir);
+  async save({ session: sessionName }) {
+    // RemoteAuth passes only the session NAME (e.g. "RemoteAuth-primary"),
+    // not a path — we build the real directory ourselves.
+    const sessionDir = path.join(process.cwd(), AUTH_DIR, sessionName);
     const tempDir = path.join(process.cwd(), AUTH_DIR, `temp_${sessionName}`);
+
+    if (!fs.existsSync(sessionDir)) {
+      throw new Error(`Session directory not found: ${sessionDir}`);
+    }
 
     console.log(`[MongoDB] save() — Archiving session: "${sessionName}"`);
 

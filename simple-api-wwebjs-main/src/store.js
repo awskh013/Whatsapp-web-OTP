@@ -20,7 +20,16 @@ class MongoStore {
     this._bucket = new GridFSBucket(this._db);
     console.log('[MongoDB] Connected — GridFS ready ✓');
   }
-
+  
+ async delete({ session: sessionName }) {
+  try {
+    const file = await this._db.collection('fs.files').findOne({ filename: sessionName });
+    if (file) await this._bucket.delete(file._id);
+    console.log(`🗑️ [MongoDB] Session deleted: ${sessionName}`);
+  } catch (err) {
+    console.error('[MongoDB] delete error:', err.message);
+  }
+ }
   async sessionExists({ session }) {
     try {
       const file = await this._db.collection('fs.files').findOne({ filename: session });

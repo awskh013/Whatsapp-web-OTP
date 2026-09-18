@@ -1,8 +1,13 @@
 import archiver from 'archiver';
-import { createWriteStream, createReadStream } from 'fs';
-import { Extract } from 'unzipper';
+import fs from 'fs';
+import path from 'path';
+import { pipeline } from 'stream/promises';
+import { MongoClient, GridFSBucket } from 'mongodb';
 
-class MongoStore {
+const MONGODB_URI = process.env.MONGODB_URI;
+const AUTH_DIR = '.wwebjs_auth';
+
+export class MongoStore {
   constructor() {
     this._client = null;
     this._db = null;
@@ -16,33 +21,25 @@ class MongoStore {
     });
     await this._client.connect();
     this._db = this._client.db('whatsapp_bot');
-    const { GridFSBucket } = await import('mongodb');
     this._bucket = new GridFSBucket(this._db);
     console.log('[MongoDB] Connected — GridFS ready ✓');
   }
-  
- async delete({ session: sessionName }) {
-  try {
-    const file = await this._db.collection('fs.files').findOne({ filename: sessionName });
-    if (file) await this._bucket.delete(file._id);
-    console.log(`🗑️ [MongoDB] Session deleted: ${sessionName}`);
-  } catch (err) {
-    console.error('[MongoDB] delete error:', err.message);
-  }
- }
+
   async sessionExists({ session }) {
     try {
       const file = await this._db.collection('fs.files').findOne({ filename: session });
       return !!file;
-    } catch (err) { return false; }
+    } catch (err) {
+      return false;
+    }
   }
 
   async save({ session: sessionDir }) {
     const sessionName = path.basename(sessionDir);
     const tempDir = path.join(process.cwd(), AUTH_DIR, `temp_${sessionName}`);
-    
+
     console.log(`[MongoDB] save() — Archiving session: "${sessionName}"`);
-    
+
     try {
       // 1. تنظيف ونسخ المجلد (Static Copy)
       if (fs.existsSync(tempDir)) fs.rmSync(tempDir, { recursive: true, force: true });
@@ -62,10 +59,10 @@ class MongoStore {
       const oldFile = await this._db.collection('fs.files').findOne({ filename: sessionName });
       if (oldFile) await this._bucket.delete(oldFile._id);
 
-      // 4. الرفع باستخدام Stream مع ضمان الإغلاق الكامل
+      // 4. الرفع باستخدام Stream مباشرة (بدون ملف zip وسيط على الديسك)
       await new Promise((resolve, reject) => {
         const uploadStream = this._bucket.openUploadStream(sessionName);
-        const archive = archiver('zip', { zlib: { level: 9 } }); // أقصى ضغط لتقليل الحجم
+        const archive = archiver('zip', { zlib: { level: 9 } });
 
         archive.on('error', reject);
         uploadStream.on('error', reject);
@@ -99,15 +96,14 @@ class MongoStore {
       const downloadStream = this._bucket.openDownloadStream(file._id);
       const writeStream = fs.createWriteStream(destZipPath);
 
-      // استخدام pipeline مع التأكد من إفراغ الذاكرة المؤقتة للقرص (Flash to disk)
       await pipeline(downloadStream, writeStream);
-      
-      // [إضافة حاسمة] التأكد من أن نظام التشغيل أغلق الملف تماماً
+
+      // التأكد من أن نظام التشغيل أغلق الملف تماماً (flush إلى القرص)
       const fd = fs.openSync(destZipPath, 'r+');
       fs.fsyncSync(fd);
       fs.closeSync(fd);
 
-      // انتظار بسيط جداً لضمان استقرار الملف قبل أن تقرأه مكتبة الواتساب
+      // انتظار بسيط لضمان استقرار الملف قبل أن تقرأه مكتبة الواتساب
       await new Promise(r => setTimeout(r, 1000));
 
       const stats = fs.statSync(destZipPath);
@@ -115,6 +111,16 @@ class MongoStore {
     } catch (err) {
       console.error('[MongoDB] extract error:', err.message);
       throw err;
+    }
+  }
+
+  async delete({ session: sessionName }) {
+    try {
+      const file = await this._db.collection('fs.files').findOne({ filename: sessionName });
+      if (file) await this._bucket.delete(file._id);
+      console.log(`🗑️ [MongoDB] Session deleted: ${sessionName}`);
+    } catch (err) {
+      console.error('[MongoDB] delete error:', err.message);
     }
   }
 }

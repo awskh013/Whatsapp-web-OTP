@@ -12,6 +12,7 @@ export class MongoStore {
     this._client = null;
     this._db = null;
     this._bucket = null;
+    this._saveInFlight = null;
   }
 
   async init() {
@@ -35,6 +36,22 @@ export class MongoStore {
   }
 
   async save({ session: sessionName }) {
+    // Prevent two save() calls (e.g. RemoteAuth's internal backupSyncInterval
+    // firing at the same moment as our SIGTERM handler's explicit save) from
+    // racing on the same tempDir / same delete-then-upload sequence. If a
+    // save is already running, just wait for it and piggyback on its result.
+    if (this._saveInFlight) {
+      console.log(`[MongoDB] save() already in progress for "${sessionName}" — waiting for it instead of starting a second one`);
+      return this._saveInFlight;
+    }
+
+    this._saveInFlight = this._doSave(sessionName).finally(() => {
+      this._saveInFlight = null;
+    });
+    return this._saveInFlight;
+  }
+
+  async _doSave(sessionName) {
     // RemoteAuth passes only the session NAME (e.g. "RemoteAuth-primary"),
     // not a path — we build the real directory ourselves.
     const sessionDir = path.join(process.cwd(), AUTH_DIR, sessionName);
@@ -61,19 +78,18 @@ export class MongoStore {
         if (fs.existsSync(fullPath)) fs.rmSync(fullPath, { recursive: true, force: true });
       });
 
-      // 3. حذف الملف القديم
-      const oldFile = await this._db.collection('fs.files').findOne({ filename: sessionName });
-      if (oldFile) await this._bucket.delete(oldFile._id);
-
-      // 4. الرفع باستخدام Stream مباشرة (بدون ملف zip وسيط على الديسك)
+      // 3. الرفع الأول (قبل حذف أي نسخة قديمة) — لو الكونتينر اتقفل هنا
+      // فجأة، النسخة القديمة الصالحة لسه موجودة ومحدش لمسها.
+      let newFileId;
       await new Promise((resolve, reject) => {
         const uploadStream = this._bucket.openUploadStream(sessionName);
+        newFileId = uploadStream.id;
         const archive = archiver('zip', { zlib: { level: 9 } });
 
         archive.on('error', reject);
         uploadStream.on('error', reject);
         uploadStream.on('finish', () => {
-          console.log(`✅ [MongoDB] Session saved successfully.`);
+          console.log(`✅ [MongoDB] New session archive uploaded.`);
           resolve();
         });
 
@@ -81,6 +97,16 @@ export class MongoStore {
         archive.directory(tempDir, false);
         archive.finalize();
       });
+
+      // 4. دلوقتي بس، بعد ما اتأكدنا إن الرفع خلص فعلاً، نمسح أي نسخ
+      // قديمة بنفس الاسم غير النسخة اللي رفعناها لسه.
+      const oldFiles = await this._db.collection('fs.files')
+        .find({ filename: sessionName, _id: { $ne: newFileId } })
+        .toArray();
+      for (const oldFile of oldFiles) {
+        await this._bucket.delete(oldFile._id);
+      }
+      console.log(`✅ [MongoDB] Session saved successfully (old copies cleaned: ${oldFiles.length}).`);
 
     } catch (err) {
       console.error('[MongoDB] save error:', err.message);

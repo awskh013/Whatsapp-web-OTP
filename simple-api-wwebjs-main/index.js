@@ -43,6 +43,20 @@ const messageQueue   = [];
 let   queueRunning   = false;
 const QUEUE_INTERVAL = 5_000;
 const SEND_DELAY_MS  = 1_000; // gap between sends within the same batch
+const MAX_RETRIES    = 3;     // بعد كام محاولة نرمي الرسالة برا الـ queue حتى لو الخطأ مش معروف
+
+// أخطاء دائمة (permanent) — مفيش فايدة من إعادة المحاولة، امسحها فورًا من الـ queue
+function isPermanentError(err) {
+  const msg = (err?.message || '').toLowerCase();
+  return (
+    msg.includes('no lid for user') ||
+    msg.includes('invalid wid') ||
+    msg.includes('phone number is not registered') ||
+    msg.includes('is not a valid whatsapp user') ||
+    msg.includes('not-authorized') ||
+    msg.includes('evaluation failed')
+  );
+}
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 function ensureAuthDir() {
@@ -225,7 +239,7 @@ async function boot() {
     store = new MongoStore();
     await store.init(); // بيعمل الاتصال بـ MongoClient + GridFSBucket لوحده
     console.log('✅ Connected to MongoDB (mongoose)');
-    
+
     startQueueProcessor();
     await initWhatsAppClient();
   } catch (err) {
@@ -424,7 +438,7 @@ app.post('/whatsapp/send', (req, res) => {
   const id       = `${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
   const position = messageQueue.length + 1;
 
-  messageQueue.push({ id, phone, message, queuedAt: new Date() });
+  messageQueue.push({ id, phone, message, queuedAt: new Date(), retryCount: 0 });
   console.log(`📨 [Queue] Enqueued id=${id} phone=${phone} position=${position} queueSize=${messageQueue.length}`);
 
   return res.json({ ok: true, queued: true, id, position, queueSize: messageQueue.length });
@@ -435,7 +449,7 @@ app.get('/whatsapp/queue/status', (_req, res) => {
     ok: true,
     queueSize: messageQueue.length,
     running: queueRunning,
-    items: messageQueue.map(({ id, phone, queuedAt }) => ({ id, phone, queuedAt })),
+    items: messageQueue.map(({ id, phone, queuedAt, retryCount }) => ({ id, phone, queuedAt, retryCount: retryCount || 0 })),
   });
 });
 
@@ -456,14 +470,22 @@ function startQueueProcessor() {
     console.log(`📤 [Queue] Processing ${batch.length} message(s)...`);
 
     for (let i = 0; i < batch.length; i++) {
-      const { id, phone, message } = batch[i];
+      const { id, phone, message, retryCount = 0 } = batch[i];
       try {
         await client.sendMessage(`${phone}@c.us`, message, { sendSeen: false });
         console.log(`✅ [Queue] Sent id=${id} → ${phone}`);
       } catch (err) {
-        console.error(`❌ [Queue] Failed id=${id} → ${phone}:`, err.message);
-        messageQueue.unshift({ id, phone, message, queuedAt: new Date(), retried: true });
-        console.warn(`↩️  [Queue] Re-queued id=${id} for retry`);
+        const nextRetryCount = retryCount + 1;
+
+        // خطأ دائم (رقم مش على واتساب، صيغة غلط...) أو تخطى الحد الأقصى للمحاولات
+        // → امسحه من الـ queue بدل ما يفضل يتكرر لحد الأبد.
+        if (isPermanentError(err) || nextRetryCount >= MAX_RETRIES) {
+          console.error(`⛔ [Queue] Dropping id=${id} → ${phone} after ${nextRetryCount} attempt(s): ${err.message}`);
+        } else {
+          console.error(`❌ [Queue] Failed id=${id} → ${phone} (attempt ${nextRetryCount}/${MAX_RETRIES}):`, err.message);
+          messageQueue.unshift({ id, phone, message, queuedAt: new Date(), retryCount: nextRetryCount });
+          console.warn(`↩️  [Queue] Re-queued id=${id} for retry`);
+        }
       }
       // Fixed: was comparing batch.indexOf({...}) against a freshly-built
       // object, which is never found by reference (-1), so the delay never
